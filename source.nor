@@ -1,0 +1,12 @@
+u32 x = 10 ;
+u32 y  = 20;
+u32 za = + x y ;
+u32 zs = - x y ;
+u32 zm = * x y ;
+u32 zd = / x y ;
+bool t =false;  bool  f=  true  ;
+void block = {
+    u32 bx = 10 ;
+    u32 by = + bx 10;
+    10;
+};
