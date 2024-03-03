@@ -16,10 +16,22 @@ pub const Token = union(enum) {
     pub fn parse(allocator: Allocator, _input: []const u8) Allocator.Error![]Token {
         var output = try allocator.alloc(Token, 0);
         var input = _input;
+        var col: usize = 1;
+        var row: usize = 1;
 
-        while (input.len != 0) {
-            while (input.len != 0 and std.ascii.isWhitespace(input[0])) input = input[1..];
-            const r = parser.alt(u8, Token, &[_](fn([]const u8) ?parser.Result(u8, Token)){
+        b: while (input.len != 0) {
+            while (std.ascii.isWhitespace(input[0])) {
+                if (input[0] == '\n') {
+                    col = 0;
+                    row += 1;
+                }
+
+                col += 1;
+                input = input[1..];
+                if (input.len == 0) break :b;
+            }
+
+            const r = parser.alt(u8, Token, .{
                 parser.replace(u8, Token, parser.byte(u8, '('), Token.LParen),
                 parser.replace(u8, Token, parser.byte(u8, ')'), .RParen),
                 parser.replace(u8, Token, parser.byte(u8, '{'), .LBracket),
@@ -30,7 +42,12 @@ pub const Token = union(enum) {
                 parser.map(u8, Token, parser.take_while1(u8, std.ascii.isAlphabetic), from_word),
             })(input);
 
-            const res = if (r) |res| res else break;
+            const res = if (r) |res| res else {
+                var len: usize = 0;
+                while (input[len] != '\n') : (len += 1) {}
+                std.debug.print("main.con:{d}:{d}: \"{s}\"\n", .{row, col, input[0..len]});
+                @panic("Couldn't tokenize");
+            };
             input = res.input;
             output = try push(Token, allocator, output, res.output);
         }

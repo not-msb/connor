@@ -8,7 +8,7 @@ fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u
     var i: usize = 0;
 
     while (i < input.len) {
-        while (std.mem.startsWith(u8, input[i..], "//")) : (i += 1)
+        while (std.mem.startsWith(u8, input[i..], "//"))
             while (i < input.len and input[i] != '\n') : (i += 1) {};
 
         const start = i;
