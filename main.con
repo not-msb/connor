@@ -1,0 +1,4 @@
+// Entry function
+u8 main() {
+    return 1;
+}
