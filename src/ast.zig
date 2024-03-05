@@ -13,7 +13,6 @@ const map = parser.map;
 const drain = parser.drain;
 const manyWith0 = parser.manyWith0;
 const sequence = parser.sequence;
-const sequenceWith = parser.sequenceWith;
 
 const Node = union(enum) {
     const Function_t = struct {
@@ -61,7 +60,7 @@ pub const Ast = struct {
     fn p_stmt() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
         return
             map(*Context,
-                sequenceWith(*Context, .{
+                sequence(*Context, .{
                     Ast.p_expr,
                     drain(tag(Token, .SemiColon)),
                 }),
@@ -85,7 +84,7 @@ pub const Ast = struct {
 
     fn p_call() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
         return map(*Context,
-            sequenceWith(*Context, .{
+            sequence(*Context, .{
                 map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
                 Ast.p_expr,
             }),
@@ -96,7 +95,7 @@ pub const Ast = struct {
     fn p_block() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, []Ast) {
         return
             map(*Context,
-                sequenceWith(*Context, .{
+                sequence(*Context, .{
                     drain(tag(Token, .LBracket)),
                     manyWith0(*Context, Ast.p_stmt()),
                     drain(tag(Token, .RBracket)),
@@ -108,7 +107,7 @@ pub const Ast = struct {
     fn p_function(allocator: Allocator, _input: []const Token, ctx: *Context) Allocator.Error!?Result(Token, Ast) {
         var input = _input;
 
-        const prefix = try sequence(.{
+        const prefix = try sequence(null, .{
             map(null, tag(Token, .Type), tools.unTag(Token, Type, .Type)),
             map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
             drain(tag(Token, .LParen)),

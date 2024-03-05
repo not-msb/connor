@@ -120,7 +120,7 @@ pub fn alt(comptime funcs: anytype) @TypeOf(funcs[0]) {
     return gen.f;
 }
 
-pub fn sequence(comptime funcs: anytype) replaceOutputFull(outputTuple(funcs), funcs[0]) {
+pub fn sequence(comptime W: ?type, comptime funcs: anytype) if (W) |w| replaceOutputFullWith(outputTuple(funcs), w, funcs[0]) else replaceOutputFull(outputTuple(funcs), funcs[0]) {
     const gen = struct {
         fn f(allocator: Allocator, _input: []const inputType(funcs[0])) replaceOutput(outputTuple(funcs), funcs[0]) {
             var input = _input;
@@ -136,25 +136,20 @@ pub fn sequence(comptime funcs: anytype) replaceOutputFull(outputTuple(funcs), f
                 .output = output,
             };
         }
-    };
 
-    return gen.f;
-}
-
-pub fn sequenceWith(comptime W: type, comptime funcs: anytype) replaceOutputFullWith(outputTuple(funcs), W, funcs[0]) {
-    const gen = struct {
-        fn f(allocator: Allocator, _input: []const inputType(funcs[0]), with: W) replaceOutput(outputTuple(funcs), funcs[0]) {
+        fn g(allocator: Allocator, _input: []const inputType(funcs[0]), with: W.?) replaceOutput(outputTuple(funcs), funcs[0]) {
             var input = _input;
             var output: outputTuple(funcs) = undefined;
 
             inline for (funcs, 0..) |func, i| {
-                const r = if (getWithType(func)) |_| func(allocator, input, with) else func(allocator, input);
+                const r = if (getWithType(func)) |_|
+                    func(allocator, input, with) else
+                    func(allocator, input);
                 if (try r) |res| {
                     input = res.input;
                     output[i] = res.output;
                 } else return null;
             }
-
             return .{
                 .input = input,
                 .output = output,
@@ -162,7 +157,7 @@ pub fn sequenceWith(comptime W: type, comptime funcs: anytype) replaceOutputFull
         }
     };
 
-    return gen.f;
+    return if (W) |_| gen.g else gen.f;
 }
 
 pub fn map(comptime W: ?type, comptime func: anytype, comptime r_func: anytype) if (W) |w| replaceOutputFullWith(returnTypeErr(r_func), w, func) else replaceOutputFull(returnTypeErr(r_func), func) {
