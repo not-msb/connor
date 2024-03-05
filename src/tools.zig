@@ -8,7 +8,7 @@ pub fn box(allocator: Allocator, value: anytype) Allocator.Error!*@TypeOf(value)
 }
 
 pub fn push(comptime T: type, allocator: Allocator, slice: []T, value: T) Allocator.Error![]T {
-    var new = try allocator.realloc(slice, slice.len+1);
+    var new = try allocator.realloc(slice, slice.len + 1);
     new[slice.len] = value;
     return new;
 }
@@ -34,7 +34,7 @@ pub fn indexWith(comptime T: type, comptime W: type, comptime idx: usize) fn (sl
     return gen.f;
 }
 
-pub fn unTag(comptime T: type, comptime O: type, comptime source: @typeInfo(T).Union.tag_type.?) fn(T) O {
+pub fn unTag(comptime T: type, comptime O: type, comptime source: @typeInfo(T).Union.tag_type.?) fn (T) O {
     const gen = struct {
         fn f(input: T) O {
             return @field(input, @tagName(source));

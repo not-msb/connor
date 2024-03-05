@@ -17,9 +17,9 @@ fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u
         while (i < input.len and input[i] != '\n') : (i += 1) {}
         if (i != input.len) i += 1;
 
-        const len = i-start;
-        output = try allocator.realloc(output, output.len+len);
-        @memcpy(output[output.len-len..], input[start..i]);
+        const len = i - start;
+        output = try allocator.realloc(output, output.len + len);
+        @memcpy(output[output.len - len ..], input[start..i]);
     }
 
     return output;

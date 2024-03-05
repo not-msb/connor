@@ -57,33 +57,36 @@ pub const Ast = struct {
         return null;
     }
 
-    fn p_stmt() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
-        return
-            map(*Context,
-                sequence(*Context, .{
-                    Ast.p_expr,
-                    drain(tag(Token, .SemiColon)),
-                }),
-                tools.indexWith(Ast, *Context, 0),
-            );
+    fn p_stmt() fn (Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
+        return map(
+            *Context,
+            sequence(*Context, .{
+                Ast.p_expr,
+                drain(tag(Token, .SemiColon)),
+            }),
+            tools.indexWith(Ast, *Context, 0),
+        );
     }
 
-    fn p_int() fn(Allocator, []const Token) Allocator.Error!?Result(Token, Ast) {
-        return map(null,
+    fn p_int() fn (Allocator, []const Token) Allocator.Error!?Result(Token, Ast) {
+        return map(
+            null,
             map(null, tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
             Ast.fromInt,
         );
     }
 
-    fn p_word() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
-        return map(*Context,
+    fn p_word() fn (Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
+        return map(
+            *Context,
             map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
             Ast.fromWord,
         );
     }
 
-    fn p_call() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
-        return map(*Context,
+    fn p_call() fn (Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
+        return map(
+            *Context,
             sequence(*Context, .{
                 map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
                 Ast.p_expr,
@@ -92,16 +95,16 @@ pub const Ast = struct {
         );
     }
 
-    fn p_block() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, []Ast) {
-        return
-            map(*Context,
-                sequence(*Context, .{
-                    drain(tag(Token, .LBracket)),
-                    manyWith0(*Context, Ast.p_stmt()),
-                    drain(tag(Token, .RBracket)),
-                }),
-                tools.indexWith([]Ast, *Context, 1),
-            );
+    fn p_block() fn (Allocator, []const Token, *Context) Allocator.Error!?Result(Token, []Ast) {
+        return map(
+            *Context,
+            sequence(*Context, .{
+                drain(tag(Token, .LBracket)),
+                manyWith0(*Context, Ast.p_stmt()),
+                drain(tag(Token, .RBracket)),
+            }),
+            tools.indexWith([]Ast, *Context, 1),
+        );
     }
 
     fn p_function(allocator: Allocator, _input: []const Token, ctx: *Context) Allocator.Error!?Result(Token, Ast) {
@@ -121,9 +124,9 @@ pub const Ast = struct {
         defer context.deinit();
 
         try context.put("return", .{ .Function = .{
-            .params = &[_]Type{ output[0] },
+            .params = &[_]Type{output[0]},
             .ret = &.NoReturn,
-        }});
+        } });
 
         const block = try Ast.p_block()(allocator, input, &context) orelse return null;
         return .{
@@ -151,7 +154,7 @@ pub const Ast = struct {
             .node = .{ .Call = .{
                 .name = source[0],
                 .expr = try tools.box(allocator, source[1]),
-            }},
+            } },
             .ty = ctx.get(source[0]).?.Function.ret.*,
         };
     }
@@ -160,14 +163,14 @@ pub const Ast = struct {
         const ty = .{ .Function = .{
             .params = try ctx.allocator.alloc(Type, 0),
             .ret = try tools.box(ctx.allocator, source[0]),
-        }};
+        } };
         try ctx.put(source[1], ty);
 
         return .{
             .node = .{ .Function = .{
                 .name = source[1],
                 .exprs = source[4],
-            }},
+            } },
             .ty = ty,
         };
     }

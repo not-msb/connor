@@ -4,7 +4,6 @@ const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 const Type = lib.Type;
 
-
 pub const Context = struct {
     allocator: Allocator,
     symbols: StringHashMap(Type),
