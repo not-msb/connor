@@ -4,8 +4,19 @@ const Allocator = std.mem.Allocator;
 const Context = lib.Context;
 const Token = lib.Token;
 const Type = lib.Type;
-const parser = lib.parser;
 const tools = lib.tools;
+
+const parser = lib.parser;
+const Result = parser.Result;
+const tag = parser.tag;
+const map = parser.map;
+const drain = parser.drain;
+const noWith = parser.noWith;
+const mapWith = parser.mapWith;
+const mapAllocWith = parser.mapAllocWith;
+const manyWith0 = parser.manyWith0;
+const sequence = parser.sequence;
+const sequenceWith = parser.sequenceWith;
 
 const Node = union(enum) {
     const Function_t = struct {
@@ -40,71 +51,71 @@ pub const Ast = struct {
         res.output.print(0);
     }
 
-    fn p_expr(allocator: Allocator, input: []const Token, ctx: *Context) Allocator.Error!?parser.Result(Token, Ast) {
+    fn p_expr(allocator: Allocator, input: []const Token, ctx: *Context) Allocator.Error!?Result(Token, Ast) {
         if (try Ast.p_call()(allocator, input, ctx)) |res|
             return res;
-        if (try Ast.p_int(allocator, input)) |res|
+        if (try Ast.p_int()(allocator, input)) |res|
             return res;
         if (try Ast.p_word()(allocator, input, ctx)) |res|
             return res;
         return null;
     }
 
-    fn p_stmt() fn(Allocator, []const Token, *Context) Allocator.Error!?parser.Result(Token, Ast) {
+    fn p_stmt() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
         return
-            parser.mapWith(Token, Ast, *Context,
-                parser.sequenceWith(Token, struct { Ast, void }, *Context, .{
+            mapWith(*Context,
+                sequenceWith(*Context, .{
                     Ast.p_expr,
-                    parser.noWith(Token, void, *Context, parser.drain(Token, parser.tag(Token, .SemiColon))),
+                    noWith(*Context, drain(tag(Token, .SemiColon))),
                 }),
                 tools.indexWith(Ast, *Context, 0),
             );
     }
 
-    fn p_int(allocator: Allocator, input: []const Token) Allocator.Error!?parser.Result(Token, Ast) {
-        return parser.map(Token, Ast,
-            parser.map(Token, usize, parser.tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
+    fn p_int() fn(Allocator, []const Token) Allocator.Error!?Result(Token, Ast) {
+        return map(
+            map(tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
             Ast.fromInt,
-        )(allocator, input);
+        );
     }
 
-    fn p_word() fn(Allocator, []const Token, *Context) Allocator.Error!?parser.Result(Token, Ast) {
-        return parser.mapWith(Token, Ast, *Context,
-            parser.noWith(Token, []const u8, *Context, parser.map(Token, []const u8, parser.tag(Token, .Word), tools.unTag(Token, []const u8, .Word))),
+    fn p_word() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
+        return mapWith(*Context,
+            noWith(*Context, map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word))),
             Ast.fromWord,
         );
     }
 
-    fn p_call() fn(Allocator, []const Token, *Context) Allocator.Error!?parser.Result(Token, Ast) {
-        return parser.mapAllocWith(Token, Ast, *Context,
-            parser.sequenceWith(Token, Call_t, *Context, .{
-                parser.noWith(Token, []const u8, *Context, parser.map(Token, []const u8, parser.tag(Token, .Word), tools.unTag(Token, []const u8, .Word))),
+    fn p_call() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
+        return mapAllocWith(*Context,
+            sequenceWith(*Context, .{
+                noWith(*Context, map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word))),
                 Ast.p_expr,
             }),
             Ast.fromCall,
         );
     }
 
-    fn p_block() fn(Allocator, []const Token, *Context) Allocator.Error!?parser.Result(Token, []Ast) {
+    fn p_block() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, []Ast) {
         return
-            parser.mapWith(Token, []Ast, *Context,
-                parser.sequenceWith(Token, struct { void, []Ast, void }, *Context, .{
-                    parser.noWith(Token, void, *Context, parser.drain(Token, parser.tag(Token, .LBracket))),
-                    parser.manyWith0(Token, Ast, *Context, Ast.p_stmt()),
-                    parser.noWith(Token, void, *Context, parser.drain(Token, parser.tag(Token, .RBracket))),
+            mapWith(*Context,
+                sequenceWith(*Context, .{
+                    noWith(*Context, drain(tag(Token, .LBracket))),
+                    manyWith0(*Context, Ast.p_stmt()),
+                    noWith(*Context, drain(tag(Token, .RBracket))),
                 }),
                 tools.indexWith([]Ast, *Context, 1),
             );
     }
 
-    fn p_function(allocator: Allocator, _input: []const Token, ctx: *Context) Allocator.Error!?parser.Result(Token, Ast) {
+    fn p_function(allocator: Allocator, _input: []const Token, ctx: *Context) Allocator.Error!?Result(Token, Ast) {
         var input = _input;
 
-        const prefix = try parser.sequence(Token, struct { Type, []const u8, void, void }, .{
-            parser.map(Token, Type, parser.tag(Token, .Type), tools.unTag(Token, Type, .Type)),
-            parser.map(Token, []const u8, parser.tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
-            parser.drain(Token, parser.tag(Token, .LParen)),
-            parser.drain(Token, parser.tag(Token, .RParen)),
+        const prefix = try sequence(.{
+            map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
+            map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
+            drain(tag(Token, .LParen)),
+            drain(tag(Token, .RParen)),
         })(allocator, input) orelse return null;
 
         input = prefix.input;

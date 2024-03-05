@@ -2,8 +2,15 @@ const std = @import("std");
 const lib = @import("lib.zig");
 const Allocator = std.mem.Allocator;
 const Type = lib.Type;
-const parser = lib.parser;
 const tools = lib.tools;
+
+const parser = lib.parser;
+const byte = parser.byte;
+const bytes = parser.bytes;
+const alt = parser.alt;
+const map = parser.map;
+const replace = parser.replace;
+const take_while1 = parser.take_while1;
 
 pub const Token = union(enum) {
     LParen,
@@ -23,15 +30,15 @@ pub const Token = union(enum) {
             while (input.len != 0 and std.ascii.isWhitespace(input[0])) input = input[1..];
             if (input.len == 0) break;
 
-            const r = try parser.alt(u8, Token, .{
-                parser.replace(u8, Token, parser.byte(u8, '('), Token.LParen),
-                parser.replace(u8, Token, parser.byte(u8, ')'), .RParen),
-                parser.replace(u8, Token, parser.byte(u8, '{'), .LBracket),
-                parser.replace(u8, Token, parser.byte(u8, '}'), .RBracket),
-                parser.replace(u8, Token, parser.byte(u8, ';'), .SemiColon),
-                parser.replace(u8, Token, parser.bytes(u8, "u8"), .{ .Type = .U8 }),
-                parser.map(u8, Token, parser.take_while1(u8, std.ascii.isDigit), from_int),
-                parser.map(u8, Token, parser.take_while1(u8, std.ascii.isAlphabetic), from_word),
+            const r = try alt(.{
+                replace(byte(u8, '('), @as(Token, .LParen)),
+                replace(byte(u8, ')'), @as(Token, .RParen)),
+                replace(byte(u8, '{'), @as(Token, .LBracket)),
+                replace(byte(u8, '}'), @as(Token, .RBracket)),
+                replace(byte(u8, ';'), @as(Token, .SemiColon)),
+                replace(bytes(u8, "u8"), Token{ .Type = .U8 }),
+                map(take_while1(u8, std.ascii.isDigit), from_int),
+                map(take_while1(u8, std.ascii.isAlphabetic), from_word),
             })(allocator, input);
 
             const res = if (r) |res| res else @panic("Couldn't tokenize");
