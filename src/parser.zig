@@ -85,38 +85,6 @@ pub fn take_while0(comptime T: type, comptime func: fn(T) bool) fn(Allocator, []
     return gen.f;
 }
 
-pub fn many1(comptime T: type, comptime O: type, comptime func: fn(T) bool) fn(Allocator, []const T) Allocator.Error!?Result(T, []O) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const T) Allocator.Error!?Result(T, []O) {
-            const res = (try many0(T, O, func)(allocator, input)).?;
-            return if (res.output.len == 0) null else res;
-        }
-    };
-
-    return gen.f;
-}
-
-pub fn many0(comptime T: type, comptime O: type, comptime func: anytype) fn(Allocator, []const T) Allocator.Error!?Result(T, []O) {
-    const gen = struct {
-        fn f(allocator: Allocator, _input: []const T) Allocator.Error!?Result(T, []O) {
-            var input = _input;
-            var output = try allocator.alloc(O, 0);
-            while (try func(allocator, input)) |res| {
-                input = res.input;
-                output = try allocator.realloc(output, output.len + 1);
-                output[output.len - 1] = res.output;
-            }
-
-            return .{
-                .input = input,
-                .output = output,
-            };
-        }
-    };
-
-    return gen.f;
-}
-
 pub fn manyWith0(comptime W: type, comptime func: anytype) replaceOutputFullWith([]outputType(func), W, func) {
     const gen = struct {
         fn f(allocator: Allocator, _input: []const inputType(func), with: W) replaceOutput([]outputType(func), func) {
@@ -179,11 +147,14 @@ pub fn sequenceWith(comptime W: type, comptime funcs: anytype) replaceOutputFull
             var input = _input;
             var output: outputTuple(funcs) = undefined;
 
-            inline for (funcs, 0..) |func, i|
-                if (try func(allocator, input, with)) |res| {
+            inline for (funcs, 0..) |func, i| {
+                const r = if (getWithType(func)) |_| func(allocator, input, with) else func(allocator, input);
+                if (try r) |res| {
                     input = res.input;
                     output[i] = res.output;
                 } else return null;
+            }
+
             return .{
                 .input = input,
                 .output = output,
@@ -194,68 +165,46 @@ pub fn sequenceWith(comptime W: type, comptime funcs: anytype) replaceOutputFull
     return gen.f;
 }
 
-pub fn map(comptime func: anytype, comptime r_func: anytype) replaceOutputFull(returnType(r_func), func) {
+pub fn map(comptime W: ?type, comptime func: anytype, comptime r_func: anytype) if (W) |w| replaceOutputFullWith(returnTypeErr(r_func), w, func) else replaceOutputFull(returnTypeErr(r_func), func) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func)) replaceOutput(returnType(r_func), func) {
+        fn f(allocator: Allocator, input: []const inputType(func)) replaceOutput(returnTypeErr(r_func), func) {
+            const allocates = comptime allocsError(r_func);
+
             if (try func(allocator, input)) |res| {
+                const output = if (allocates)
+                    try r_func(allocator, res.output) else
+                    r_func(res.output);
                 return .{
                     .input = res.input,
-                    .output = r_func(res.output),
+                    .output = output,
+                };
+            }
+            return null;
+        }
+
+        fn g(allocator: Allocator, input: []const inputType(func), with: W.?) replaceOutput(returnTypeErr(r_func), func) {
+            const f_args = if (getWithType(func)) |_|
+                .{ allocator, input, with } else
+                .{ allocator, input };
+
+            if (try @call(.auto, func, f_args)) |res| {
+                const allocates = comptime allocsError(r_func);
+                const uses_with = comptime getWithType(r_func) != null;
+                const output =
+                    if (!allocates and !uses_with) r_func(res.output) else
+                    if (!allocates and  uses_with) r_func(res.output, with) else
+                    if ( allocates and !uses_with) try r_func(allocator, res.output) else
+                    if ( allocates and  uses_with) try r_func(allocator, res.output, with);
+                return .{
+                    .input = res.input,
+                    .output = output,
                 };
             }
             return null;
         }
     };
 
-    return gen.f;
-}
-
-pub fn mapWith(comptime W: type, comptime func: anytype, comptime r_func: anytype) replaceOutputFullWith(returnType(r_func), W, func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func), with: W) replaceOutput(returnType(r_func), func) {
-            if (try func(allocator, input, with)) |res| {
-                return .{
-                    .input = res.input,
-                    .output = r_func(res.output, with),
-                };
-            }
-            return null;
-        }
-    };
-
-    return gen.f;
-}
-
-pub fn mapAlloc(comptime func: anytype, comptime r_func: anytype) replaceOutputFull(returnType(r_func), func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func)) replaceOutput(returnType(r_func), func) {
-            if (try func(allocator, input)) |res| {
-                return .{
-                    .input = res.input,
-                    .output = try r_func(allocator, res.output),
-                };
-            }
-            return null;
-        }
-    };
-
-    return gen.f;
-}
-
-pub fn mapAllocWith(comptime W: type, comptime func: anytype, comptime r_func: anytype) replaceOutputFullWith(returnTypeErr(r_func), W, func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func), with: W) replaceOutput(returnTypeErr(r_func), func) {
-            if (try func(allocator, input, with)) |res| {
-                return .{
-                    .input = res.input,
-                    .output = try r_func(allocator, res.output, with),
-                };
-            }
-            return null;
-        }
-    };
-
-    return gen.f;
+    return if (W) |_| gen.g else gen.f;
 }
 
 pub fn replace(comptime func: anytype, comptime repl: anytype) replaceOutputFull(@TypeOf(repl), func) {
@@ -290,24 +239,16 @@ pub fn drain(comptime func: anytype) replaceOutputFull(void, func) {
     return gen.f;
 }
 
-pub fn noWith(comptime W: type, comptime func: anytype) fn (Allocator, []const inputType(func), W) returnType(func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func), with: W) returnType(func) {
-            _ = with;
-            return func(allocator, input);
-        }
-    };
-
-    return gen.f;
-}
-
 // Utilities
 fn returnType(func: anytype) type {
     return @typeInfo(@TypeOf(func)).Fn.return_type.?;
 }
 
 fn returnTypeErr(func: anytype) type {
-    return @typeInfo(@typeInfo(@TypeOf(func)).Fn.return_type.?).ErrorUnion.payload;
+    const T = returnType(func);
+    return if (@typeInfo(T) == .ErrorUnion)
+        @typeInfo(T).ErrorUnion.payload else
+        T;
 }
 
 fn inputType(func: anytype) type {
@@ -317,8 +258,22 @@ fn inputType(func: anytype) type {
         @typeInfo(params[0].type.?).Pointer.child;
 }
 
+fn getWithType(func: anytype) ?type {
+    const params = @typeInfo(@TypeOf(func)).Fn.params;
+    if (params.len <= 1) return null;
+    if (params[0].type != null and params[0].type.? == Allocator)
+        return if (params.len == 3) params[2].type else null;
+    return params[params.len-1].type;
+}
+
 fn outputType(func: anytype) type {
     return @typeInfo(@typeInfo(@typeInfo(@typeInfo(@TypeOf(func)).Fn.return_type.?).ErrorUnion.payload).Optional.child).Struct.fields[1].type;
+}
+
+fn allocsError(func: anytype) bool {
+    const params = @typeInfo(@TypeOf(func)).Fn.params;
+    const ret = @typeInfo(@TypeOf(func)).Fn.return_type.?;
+    return (@typeInfo(ret) == .ErrorUnion or @typeInfo(ret) == .ErrorSet) and (params.len != 0 and params[0].type == Allocator);
 }
 
 fn outputTuple(funcs: anytype) type {

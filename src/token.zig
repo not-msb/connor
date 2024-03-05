@@ -37,8 +37,8 @@ pub const Token = union(enum) {
                 replace(byte(u8, '}'), @as(Token, .RBracket)),
                 replace(byte(u8, ';'), @as(Token, .SemiColon)),
                 replace(bytes(u8, "u8"), Token{ .Type = .U8 }),
-                map(take_while1(u8, std.ascii.isDigit), from_int),
-                map(take_while1(u8, std.ascii.isAlphabetic), from_word),
+                map(null, take_while1(u8, std.ascii.isDigit), from_int),
+                map(null, take_while1(u8, std.ascii.isAlphabetic), from_word),
             })(allocator, input);
 
             const res = if (r) |res| res else @panic("Couldn't tokenize");

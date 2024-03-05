@@ -11,9 +11,6 @@ const Result = parser.Result;
 const tag = parser.tag;
 const map = parser.map;
 const drain = parser.drain;
-const noWith = parser.noWith;
-const mapWith = parser.mapWith;
-const mapAllocWith = parser.mapAllocWith;
 const manyWith0 = parser.manyWith0;
 const sequence = parser.sequence;
 const sequenceWith = parser.sequenceWith;
@@ -63,33 +60,33 @@ pub const Ast = struct {
 
     fn p_stmt() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
         return
-            mapWith(*Context,
+            map(*Context,
                 sequenceWith(*Context, .{
                     Ast.p_expr,
-                    noWith(*Context, drain(tag(Token, .SemiColon))),
+                    drain(tag(Token, .SemiColon)),
                 }),
                 tools.indexWith(Ast, *Context, 0),
             );
     }
 
     fn p_int() fn(Allocator, []const Token) Allocator.Error!?Result(Token, Ast) {
-        return map(
-            map(tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
+        return map(null,
+            map(null, tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
             Ast.fromInt,
         );
     }
 
     fn p_word() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
-        return mapWith(*Context,
-            noWith(*Context, map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word))),
+        return map(*Context,
+            map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
             Ast.fromWord,
         );
     }
 
     fn p_call() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, Ast) {
-        return mapAllocWith(*Context,
+        return map(*Context,
             sequenceWith(*Context, .{
-                noWith(*Context, map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word))),
+                map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
                 Ast.p_expr,
             }),
             Ast.fromCall,
@@ -98,11 +95,11 @@ pub const Ast = struct {
 
     fn p_block() fn(Allocator, []const Token, *Context) Allocator.Error!?Result(Token, []Ast) {
         return
-            mapWith(*Context,
+            map(*Context,
                 sequenceWith(*Context, .{
-                    noWith(*Context, drain(tag(Token, .LBracket))),
+                    drain(tag(Token, .LBracket)),
                     manyWith0(*Context, Ast.p_stmt()),
-                    noWith(*Context, drain(tag(Token, .RBracket))),
+                    drain(tag(Token, .RBracket)),
                 }),
                 tools.indexWith([]Ast, *Context, 1),
             );
@@ -112,8 +109,8 @@ pub const Ast = struct {
         var input = _input;
 
         const prefix = try sequence(.{
-            map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
-            map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
+            map(null, tag(Token, .Type), tools.unTag(Token, Type, .Type)),
+            map(null, tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
             drain(tag(Token, .LParen)),
             drain(tag(Token, .RParen)),
         })(allocator, input) orelse return null;
