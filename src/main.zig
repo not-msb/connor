@@ -1,7 +1,9 @@
 const std = @import("std");
+const lib = @import("lib.zig");
 const cwd = std.fs.cwd;
 const Allocator = std.mem.Allocator;
-const Token = @import("token.zig").Token;
+const Token = lib.Token;
+const Ast = lib.Ast;
 
 fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u8 {
     var output = try allocator.alloc(u8, 0);
@@ -35,7 +37,9 @@ pub fn main() !void {
     const processed = try preprocess(allocator, input);
 
     const tokens = try Token.parse(allocator, processed);
-    for (tokens) |token| {
-        std.debug.print("Token: {}\n", .{token});
-    }
+    //for (tokens) |token| {
+    //    std.debug.print("Token: {}\n", .{token});
+    //}
+
+    try Ast.parse(allocator, tokens);
 }
