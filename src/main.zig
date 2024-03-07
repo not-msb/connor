@@ -41,5 +41,6 @@ pub fn main() !void {
     //    std.debug.print("Token: {}\n", .{token});
     //}
 
-    try Ast.parse(allocator, tokens);
+    const ast = try Ast.parse(allocator, tokens);
+    ast.print(0);
 }

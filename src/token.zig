@@ -5,6 +5,7 @@ const Type = lib.Type;
 const tools = lib.tools;
 
 const parser = lib.parser;
+const Parser = parser.Parser;
 const byte = parser.byte;
 const bytes = parser.bytes;
 const alt = parser.alt;
@@ -33,13 +34,30 @@ pub const Token = union(enum) {
                 replace(byte(u8, Allocator, ';'), @as(Token, .SemiColon)),
                 replace(bytes(u8, Allocator, "u8"), Token{ .Type = .U8 }),
                 map(takeWhile1(u8, Allocator, std.ascii.isDigit), fromInt),
-                map(takeWhile1(u8, Allocator, std.ascii.isAlphabetic), fromWord),
+                map(takeIdentifier(), fromWord),
             }),
             std.ascii.isWhitespace,
         ).parse(allocator, _input);
 
         const res = if (r) |res| res else @panic("Couldn't tokenize");
         return res.output;
+    }
+
+    fn takeIdentifier() Parser(u8, []const u8, Allocator) {
+        const gen = struct {
+            fn f(state: Allocator, input: []const u8) Parser(u8, []const u8, Allocator).Result {
+                _ = state;
+                var i: usize = 0;
+                while (i < input.len and (std.ascii.isAlphabetic(input[i]) or input[i] == '_')) : (i += 1) {}
+                while (i < input.len and (std.ascii.isAlphabetic(input[i]) or std.ascii.isDigit(input[i]) or input[i] == '_')) : (i += 1) {}
+                return .{
+                    .input = input[i..],
+                    .output = input[0..i],
+                };
+            }
+        };
+
+        return .{ ._parse = gen.f };
     }
 
     fn fromInt(state: Allocator, input: []const u8) Allocator.Error!Token {

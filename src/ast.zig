@@ -36,16 +36,23 @@ pub const Ast = struct {
     node: Node,
     ty: Type,
 
-    const Call_t = struct { []const u8, Ast };
     const Function_t = struct { Type, []const u8, void, void, []Ast };
 
-    pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error!void {
+    pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error!Ast {
         var context = Context.init(allocator);
         defer context.deinit();
 
+        try context.put("add_u8", .{ .Function = .{
+            .params = &[_]Type{.U8},
+            .ret = &Type{ .Function = .{
+                .params = &[_]Type{.U8},
+                .ret = &.U8,
+            } },
+        } });
+
         const r = try Ast.p_function(&context, input);
         const res = if (r) |res| res else @panic("Couldn't parse");
-        res.output.print(0);
+        return res.output;
     }
 
     fn p_expr() Parser(Token, Ast, *Context) {
@@ -101,15 +108,14 @@ pub const Ast = struct {
 
                 while (output.ty == .Function) {
                     const result = try p_expr().parse(state, input) orelse break;
-                    const out = result.output;
                     input = result.input;
 
                     output = .{
                         .node = .{ .Call = .{
                             .f = try tools.box(state.allocator, output),
-                            .expr = try tools.box(state.allocator, out),
+                            .expr = try tools.box(state.allocator, result.output),
                         } },
-                        .ty = out.ty,
+                        .ty = output.ty.Function.ret.*,
                     };
                 }
 
@@ -148,15 +154,52 @@ pub const Ast = struct {
         defer context.deinit();
 
         try context.put("return", .{ .Function = .{
-            .params = &[_]Type{output[0]},
+            .params = &[1]Type{output[0]},
             .ret = &.NoReturn,
         } });
 
         const block = try Ast.p_block().parse(&context, input) orelse return null;
+        for (block.output) |*expr|
+            expr.unComp(null);
+        const ast = try Ast.fromFunction(state, .{ output[0], output[1], output[2], output[3], block.output });
+        ast.check();
+
         return .{
             .input = block.input,
-            .output = try Ast.fromFunction(state, .{ output[0], output[1], output[2], output[3], block.output }),
+            .output = ast,
         };
+    }
+
+    pub fn check(self: Ast) void {
+        return switch (self.node) {
+            .Integer, .Identifier => {},
+            .Call => |tuple| {
+                tuple.f.check();
+                tuple.expr.check();
+
+                const params = tuple.f.ty.Function.params;
+                const ty = tuple.expr.ty;
+
+                if (!ty.coercible(.{ .Tuple = params })) @panic("Incompatible types in call");
+            },
+            .Function => |tuple| for (tuple.exprs) |expr|
+                expr.check(),
+        };
+    }
+
+    pub fn unComp(self: *Ast, expected: ?Type) void {
+        switch (self.node) {
+            .Integer, .Identifier => {
+                if (expected) |ty| self.ty = ty;
+            },
+            .Call => |tuple| {
+                const params = tuple.f.ty.Function.params;
+                tuple.expr.unComp(if (params.len == 0) null else params[0]);
+                tuple.f.unComp(null);
+            },
+            .Function => |tuple| for (0..tuple.exprs.len) |i|
+                tuple.exprs[i].unComp(null),
+        }
     }
 
     fn fromInt(state: *Context, source: usize) Context.Error!Ast {
@@ -171,16 +214,6 @@ pub const Ast = struct {
         return .{
             .node = .{ .Identifier = source },
             .ty = state.get(source).?,
-        };
-    }
-
-    fn fromCall(ctx: *Context, source: Call_t) Context.Error!Ast {
-        return .{
-            .node = .{ .Call = .{
-                .name = source[0],
-                .expr = try tools.box(ctx.allocator, source[1]),
-            } },
-            .ty = ctx.get(source[0]).?.Function.ret.*,
         };
     }
 
@@ -227,7 +260,7 @@ pub const Ast = struct {
             },
         }
 
-        for (0..level) |_| p("    ", .{});
-        std.debug.print("Type: {any}\n", .{self.ty});
+        //for (0..level) |_| p("    ", .{});
+        //std.debug.print("Type: {any}\n", .{self.ty});
     }
 };
