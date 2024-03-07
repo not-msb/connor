@@ -8,6 +8,8 @@ pub const Context = struct {
     allocator: Allocator,
     symbols: StringHashMap(Type),
 
+    pub const Error = Allocator.Error;
+
     pub fn init(allocator: Allocator) Context {
         return .{
             .allocator = allocator,
@@ -32,5 +34,13 @@ pub const Context = struct {
 
     pub fn put(self: *Context, key: []const u8, value: Type) Allocator.Error!void {
         return self.symbols.put(key, value);
+    }
+
+    pub fn alloc(self: *const Context, comptime T: type, n: usize) ![]T {
+        return self.allocator.alloc(T, n);
+    }
+
+    pub fn realloc(self: *const Context, old_mem: anytype, new_n: usize) ![]@typeInfo(@TypeOf(old_mem)).Pointer.child {
+        return self.allocator.realloc(old_mem, new_n);
     }
 };

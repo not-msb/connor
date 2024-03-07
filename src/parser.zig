@@ -1,19 +1,43 @@
-// I have pity for they who try to understand anything written down below!
-
 const std = @import("std");
+const lib = @import("lib.zig");
 const Allocator = std.mem.Allocator;
+const tools = lib.tools;
 
-pub fn Result(comptime T: type, comptime O: type) type {
+pub fn Parser(comptime I: type, comptime O: type, comptime S: type) type {
     return struct {
-        input: []const T,
-        output: O,
+        _parse: fn (S, []const I) Result,
+
+        const Self = @This();
+        pub const Result = tools.getError(S)!?struct {
+            input: []const I,
+            output: O,
+        };
+
+        pub fn in(self: Self) type {
+            _ = self;
+            return I;
+        }
+
+        pub fn out(self: Self) type {
+            _ = self;
+            return O;
+        }
+
+        pub fn s(self: Self) type {
+            _ = self;
+            return S;
+        }
+
+        pub fn parse(self: Self, state: S, input: []const I) Result {
+            return self._parse(state, input);
+        }
     };
 }
 
-pub fn byte(comptime T: type, comptime source: T) fn (Allocator, []const T) Allocator.Error!?Result(T, []const T) {
+pub fn byte(comptime T: type, comptime S: type, comptime source: T) Parser(T, []const T, S) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const T) Allocator.Error!?Result(T, []const T) {
-            _ = allocator;
+        fn f(state: S, input: []const T) Parser(T, []const T, S).Result {
+            _ = state;
             if (input.len != 0 and input[0] == source)
                 return .{
                     .input = input[1..],
@@ -23,14 +47,14 @@ pub fn byte(comptime T: type, comptime source: T) fn (Allocator, []const T) Allo
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn bytes(comptime T: type, comptime source: []const T) fn (Allocator, []const T) Allocator.Error!?Result(T, []const T) {
+pub fn bytes(comptime T: type, comptime S: type, comptime source: []const T) Parser(T, []const T, S) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const T) Allocator.Error!?Result(T, []const T) {
-            _ = allocator;
-            if (std.mem.startsWith(T, input, source))
+        fn f(state: S, input: []const T) Parser(T, []const T, S).Result {
+            _ = state;
+            if (std.mem.startsWith(u8, input, source))
                 return .{
                     .input = input[source.len..],
                     .output = input[0..source.len],
@@ -39,13 +63,13 @@ pub fn bytes(comptime T: type, comptime source: []const T) fn (Allocator, []cons
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn tag(comptime T: type, comptime source: @typeInfo(T).Union.tag_type.?) fn (Allocator, []const T) Allocator.Error!?Result(T, T) {
+pub fn tag(comptime T: type, comptime S: type, comptime source: @typeInfo(T).Union.tag_type.?) Parser(T, T, S) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const T) Allocator.Error!?Result(T, T) {
-            _ = allocator;
+        fn f(state: S, input: []const T) Parser(T, T, S).Result {
+            _ = state;
             if (input.len != 0 and input[0] == source)
                 return .{
                     .input = input[1..],
@@ -55,26 +79,106 @@ pub fn tag(comptime T: type, comptime source: @typeInfo(T).Union.tag_type.?) fn 
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn take_while1(comptime T: type, comptime func: fn (T) bool) fn (Allocator, []const T) Allocator.Error!?Result(T, []const T) {
+pub fn map(comptime parser: anytype, comptime r_func: anytype) Parser(parser.in(), stripError(returnType(r_func)), parser.s()) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const T) Allocator.Error!?Result(T, []const T) {
-            const res = (try take_while0(T, func)(allocator, input)).?;
-            return if (res.output.len == 0) null else res;
+        fn f(state: parser.s(), input: []const parser.in()) Parser(parser.in(), stripError(returnType(r_func)), parser.s()).Result {
+            const result = try parser.parse(state, input) orelse return null;
+            return .{
+                .input = result.input,
+                .output = try r_func(state, result.output),
+            };
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn take_while0(comptime T: type, comptime func: fn (T) bool) fn (Allocator, []const T) Allocator.Error!?Result(T, []const T) {
+fn returnType(comptime func: anytype) type {
+    return @typeInfo(@TypeOf(func)).Fn.return_type.?;
+}
+
+fn stripError(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .ErrorUnion => |t| t.payload,
+        else => T,
+    };
+}
+
+pub fn replace(comptime parser: anytype, comptime repl: anytype) Parser(parser.in(), @TypeOf(repl), parser.s()) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const T) Allocator.Error!?Result(T, []const T) {
-            _ = allocator;
+        fn f(state: parser.s(), input: []const parser.in()) Parser(parser.in(), @TypeOf(repl), parser.s()).Result {
+            const result = try parser.parse(state, input) orelse return null;
+            return .{
+                .input = result.input,
+                .output = repl,
+            };
+        }
+    };
+
+    return .{ ._parse = gen.f };
+}
+
+// TODO: Add clone checking
+pub fn alt(comptime parsers: anytype) @TypeOf(parsers[0]) {
+    const gen = struct {
+        fn f(state: parsers[0].s(), input: []const parsers[0].in()) @TypeOf(parsers[0]).Result {
+            inline for (parsers) |parser|
+                if (try parser.parse(state, input)) |result|
+                    return result;
+            return null;
+        }
+    };
+
+    return .{ ._parse = gen.f };
+}
+
+pub fn sequence(comptime parsers: anytype) Parser(parsers[0].in(), sequenceOutput(parsers), parsers[0].s()) {
+    const gen = struct {
+        fn f(state: parsers[0].s(), _input: []const parsers[0].in()) Parser(parsers[0].in(), sequenceOutput(parsers), parsers[0].s()).Result {
+            var input = _input;
+            var output: sequenceOutput(parsers) = undefined;
+            inline for (parsers, 0..) |parser, i| {
+                const result = try parser.parse(state, input) orelse return null;
+                input = result.input;
+                output[i] = result.output;
+            }
+            return .{
+                .input = input,
+                .output = output,
+            };
+        }
+    };
+
+    return .{ ._parse = gen.f };
+}
+
+fn sequenceOutput(comptime parsers: anytype) type {
+    var types: [parsers.len]type = undefined;
+    for (parsers, 0..) |parser, i|
+        types[i] = parser.out();
+    return std.meta.Tuple(&types);
+}
+
+pub fn takeWhile1(comptime T: type, comptime S: type, comptime cond: fn (T) bool) Parser(T, []const T, S) {
+    const gen = struct {
+        fn f(state: S, input: []const T) Parser(T, []const T, S).Result {
+            const result = try takeWhile0(T, S, cond).parse(state, input) orelse return null;
+            return if (result.output.len == 0) null else result;
+        }
+    };
+
+    return .{ ._parse = gen.f };
+}
+
+pub fn takeWhile0(comptime T: type, comptime S: type, comptime cond: fn (T) bool) Parser(T, []const T, S) {
+    const gen = struct {
+        fn f(state: S, input: []const T) Parser(T, []const T, S).Result {
+            _ = state;
             var i: usize = 0;
-            while (i < input.len and func(input[i])) : (i += 1) {}
+            while (i < input.len and cond(input[i])) : (i += 1) {}
             return .{
                 .input = input[i..],
                 .output = input[0..i],
@@ -82,179 +186,131 @@ pub fn take_while0(comptime T: type, comptime func: fn (T) bool) fn (Allocator, 
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn manyWith0(comptime W: type, comptime func: anytype) replaceOutputFullWith([]outputType(func), W, func) {
+pub fn many0(comptime parser: anytype, comptime skip: ?fn (parser.in()) bool) Parser(parser.in(), []parser.out(), parser.s()) {
     const gen = struct {
-        fn f(allocator: Allocator, _input: []const inputType(func), with: W) replaceOutput([]outputType(func), func) {
+        fn f(state: parser.s(), _input: []const parser.in()) Parser(parser.in(), []parser.out(), parser.s()).Result {
             var input = _input;
-            var output = try allocator.alloc(outputType(func), 0);
-            while (try func(allocator, input, with)) |res| {
-                input = res.input;
-                output = try allocator.realloc(output, output.len + 1);
-                output[output.len - 1] = res.output;
+            var output = try state.alloc(parser.out(), 0);
+
+            while (input.len != 0) {
+                if (skip) |s|
+                    input = (try takeWhile0(parser.in(), parser.s(), s).parse(state, input)).?.input;
+                const result = try parser.parse(state, input) orelse break;
+                input = result.input;
+                output = try state.realloc(output, output.len + 1);
+                output[output.len - 1] = result.output;
             }
 
-            return .{ .input = input, .output = output };
+            return .{
+                .input = input,
+                .output = output,
+            };
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn alt(comptime funcs: anytype) @TypeOf(funcs[0]) {
+pub fn drain(comptime parser: anytype) Parser(parser.in(), void, parser.s()) {
     const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(funcs[0])) returnType(funcs[0]) {
-            inline for (funcs) |func|
-                if (try func(allocator, input)) |res|
-                    return res;
+        fn f(state: parser.s(), input: []const parser.in()) Parser(parser.in(), void, parser.s()).Result {
+            if (try parser.parse(state, input)) |result|
+                return .{ .input = result.input, .output = undefined };
             return null;
         }
     };
 
-    return gen.f;
+    return .{ ._parse = gen.f };
 }
 
-pub fn sequence(comptime W: ?type, comptime funcs: anytype) if (W) |w| replaceOutputFullWith(outputTuple(funcs), w, funcs[0]) else replaceOutputFull(outputTuple(funcs), funcs[0]) {
-    const gen = struct {
-        fn f(allocator: Allocator, _input: []const inputType(funcs[0])) replaceOutput(outputTuple(funcs), funcs[0]) {
-            var input = _input;
-            var output: outputTuple(funcs) = undefined;
+test byte {
+    const input = "aaa";
 
-            inline for (funcs, 0..) |func, i|
-                if (try func(allocator, input)) |res| {
-                    input = res.input;
-                    output[i] = res.output;
-                } else return null;
-            return .{ .input = input, .output = output };
-        }
-
-        fn g(allocator: Allocator, _input: []const inputType(funcs[0]), with: W.?) replaceOutput(outputTuple(funcs), funcs[0]) {
-            var input = _input;
-            var output: outputTuple(funcs) = undefined;
-
-            inline for (funcs, 0..) |func, i| {
-                const r = if (getWithType(func)) |_| func(allocator, input, with) else func(allocator, input);
-                if (try r) |res| {
-                    input = res.input;
-                    output[i] = res.output;
-                } else return null;
-            }
-            return .{ .input = input, .output = output };
-        }
-    };
-
-    return if (W) |_| gen.g else gen.f;
+    const parser = byte(u8, void, 'a');
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(result.?.input, "aa");
+    try std.testing.expectEqualStrings(result.?.output, "a");
 }
 
-pub fn map(comptime W: ?type, comptime func: anytype, comptime r_func: anytype) if (W) |w| replaceOutputFullWith(returnTypeErr(r_func), w, func) else replaceOutputFull(returnTypeErr(r_func), func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func)) replaceOutput(returnTypeErr(r_func), func) {
-            const allocates = comptime allocsError(r_func);
+test bytes {
+    const input = "aaa";
 
-            if (try func(allocator, input)) |res| {
-                const output = if (allocates) try r_func(allocator, res.output) else r_func(res.output);
-                return .{ .input = res.input, .output = output };
-            }
-            return null;
-        }
+    const parser = bytes(u8, void, "aa");
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(result.?.input, "a");
+    try std.testing.expectEqualStrings(result.?.output, "aa");
+}
 
-        fn g(allocator: Allocator, input: []const inputType(func), with: W.?) replaceOutput(returnTypeErr(r_func), func) {
-            const f_args = if (getWithType(func)) |_| .{ allocator, input, with } else .{ allocator, input };
+test map {
+    const Token = enum {
+        A,
+        B,
+        C,
 
-            if (try @call(.auto, func, f_args)) |res| {
-                const allocates = comptime allocsError(r_func);
-                const uses_with = comptime getWithType(r_func) != null;
-                const output =
-                    if (!allocates and !uses_with) r_func(res.output) else if (!allocates and uses_with) r_func(res.output, with) else if (allocates and !uses_with) try r_func(allocator, res.output) else if (allocates and uses_with) try r_func(allocator, res.output, with);
-                return .{ .input = res.input, .output = output };
-            }
-            return null;
+        fn from(state: void, b: []const u8) @This() {
+            _ = state;
+            return switch (b[0]) {
+                'a' => .A,
+                'b' => .B,
+                'c' => .C,
+                else => unreachable,
+            };
         }
     };
+    const input = "abc";
 
-    return if (W) |_| gen.g else gen.f;
+    const parser = map(byte(u8, void, 'a'), Token.from);
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(result.?.input, "bc");
+    try std.testing.expect(result.?.output == .A);
 }
 
-pub fn replace(comptime func: anytype, comptime repl: anytype) replaceOutputFull(@TypeOf(repl), func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func)) replaceOutput(@TypeOf(repl), func) {
-            if (try func(allocator, input)) |res|
-                return .{ .input = res.input, .output = repl };
-            return null;
-        }
-    };
+test replace {
+    const Token = enum { A, B, C };
+    const input = "abc";
 
-    return gen.f;
+    const parser = replace(byte(u8, void, 'a'), Token.A);
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(result.?.input, "bc");
+    try std.testing.expect(result.?.output == .A);
 }
 
-pub fn drain(comptime func: anytype) replaceOutputFull(void, func) {
-    const gen = struct {
-        fn f(allocator: Allocator, input: []const inputType(func)) replaceOutput(void, func) {
-            if (try func(allocator, input)) |res|
-                return .{ .input = res.input, .output = undefined };
-            return null;
-        }
-    };
+test alt {
+    const Token = enum { A, B, C };
+    const input = "cba";
 
-    return gen.f;
+    const parser = alt(.{
+        replace(byte(u8, void, 'a'), Token.A),
+        replace(byte(u8, void, 'b'), Token.B),
+        replace(byte(u8, void, 'c'), Token.C),
+    });
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(result.?.input, "ba");
+    try std.testing.expect(result.?.output == .C);
 }
 
-// Utilities
-fn returnType(func: anytype) type {
-    return @typeInfo(@TypeOf(func)).Fn.return_type.?;
+test takeWhile0 {
+    const input = "000";
+
+    const parser = takeWhile0(u8, void, std.ascii.isAlphabetic);
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(result.?.input, "000");
+    try std.testing.expectEqualStrings(result.?.output, "");
 }
 
-fn returnTypeErr(func: anytype) type {
-    const T = returnType(func);
-    return if (@typeInfo(T) == .ErrorUnion)
-        @typeInfo(T).ErrorUnion.payload
-    else
-        T;
-}
+test takeWhile1 {
+    const input = "000";
 
-fn inputType(func: anytype) type {
-    const params = @typeInfo(@TypeOf(func)).Fn.params;
-    return if (params[0].type.? == Allocator)
-        @typeInfo(params[1].type.?).Pointer.child
-    else
-        @typeInfo(params[0].type.?).Pointer.child;
-}
-
-fn getWithType(func: anytype) ?type {
-    const params = @typeInfo(@TypeOf(func)).Fn.params;
-    if (params.len <= 1) return null;
-    if (params[0].type != null and params[0].type.? == Allocator)
-        return if (params.len == 3) params[2].type else null;
-    return params[params.len - 1].type;
-}
-
-fn outputType(func: anytype) type {
-    return @typeInfo(@typeInfo(@typeInfo(@typeInfo(@TypeOf(func)).Fn.return_type.?).ErrorUnion.payload).Optional.child).Struct.fields[1].type;
-}
-
-fn allocsError(func: anytype) bool {
-    const params = @typeInfo(@TypeOf(func)).Fn.params;
-    const ret = @typeInfo(@TypeOf(func)).Fn.return_type.?;
-    return (@typeInfo(ret) == .ErrorUnion or @typeInfo(ret) == .ErrorSet) and (params.len != 0 and params[0].type == Allocator);
-}
-
-fn outputTuple(funcs: anytype) type {
-    var types: [funcs.len]type = undefined;
-    for (funcs, 0..) |func, i|
-        types[i] = outputType(func);
-    return std.meta.Tuple(&types);
-}
-
-fn replaceOutputFull(comptime O: type, func: anytype) type {
-    return fn (Allocator, []const inputType(func)) Allocator.Error!?Result(inputType(func), O);
-}
-
-fn replaceOutputFullWith(comptime O: type, comptime W: type, func: anytype) type {
-    return fn (Allocator, []const inputType(func), W) Allocator.Error!?Result(inputType(func), O);
-}
-
-fn replaceOutput(comptime O: type, func: anytype) type {
-    return Allocator.Error!?Result(inputType(func), O);
+    const parser = takeWhile1(u8, void, std.ascii.isAlphabetic);
+    const result = try parser.parse(undefined, input);
+    try std.testing.expect(result == null);
 }

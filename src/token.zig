@@ -10,7 +10,8 @@ const bytes = parser.bytes;
 const alt = parser.alt;
 const map = parser.map;
 const replace = parser.replace;
-const take_while1 = parser.take_while1;
+const takeWhile1 = parser.takeWhile1;
+const many0 = parser.many0;
 
 pub const Token = union(enum) {
     LParen,
@@ -23,37 +24,31 @@ pub const Token = union(enum) {
     Word: []const u8,
 
     pub fn parse(allocator: Allocator, _input: []const u8) Allocator.Error![]Token {
-        var output = try allocator.alloc(Token, 0);
-        var input = _input;
+        const r = try many0(
+            alt(.{
+                replace(byte(u8, Allocator, '('), @as(Token, .LParen)),
+                replace(byte(u8, Allocator, ')'), @as(Token, .RParen)),
+                replace(byte(u8, Allocator, '{'), @as(Token, .LBracket)),
+                replace(byte(u8, Allocator, '}'), @as(Token, .RBracket)),
+                replace(byte(u8, Allocator, ';'), @as(Token, .SemiColon)),
+                replace(bytes(u8, Allocator, "u8"), Token{ .Type = .U8 }),
+                map(takeWhile1(u8, Allocator, std.ascii.isDigit), fromInt),
+                map(takeWhile1(u8, Allocator, std.ascii.isAlphabetic), fromWord),
+            }),
+            std.ascii.isWhitespace,
+        ).parse(allocator, _input);
 
-        while (input.len != 0) {
-            while (input.len != 0 and std.ascii.isWhitespace(input[0])) input = input[1..];
-            if (input.len == 0) break;
-
-            const r = try alt(.{
-                replace(byte(u8, '('), @as(Token, .LParen)),
-                replace(byte(u8, ')'), @as(Token, .RParen)),
-                replace(byte(u8, '{'), @as(Token, .LBracket)),
-                replace(byte(u8, '}'), @as(Token, .RBracket)),
-                replace(byte(u8, ';'), @as(Token, .SemiColon)),
-                replace(bytes(u8, "u8"), Token{ .Type = .U8 }),
-                map(null, take_while1(u8, std.ascii.isDigit), from_int),
-                map(null, take_while1(u8, std.ascii.isAlphabetic), from_word),
-            })(allocator, input);
-
-            const res = if (r) |res| res else @panic("Couldn't tokenize");
-            input = res.input;
-            output = try tools.push(Token, allocator, output, res.output);
-        }
-
-        return output;
+        const res = if (r) |res| res else @panic("Couldn't tokenize");
+        return res.output;
     }
 
-    fn from_int(input: []const u8) Token {
+    fn fromInt(state: Allocator, input: []const u8) Allocator.Error!Token {
+        _ = state;
         return .{ .Integer = std.fmt.parseInt(usize, input, 10) catch unreachable };
     }
 
-    fn from_word(input: []const u8) Token {
+    fn fromWord(state: Allocator, input: []const u8) Allocator.Error!Token {
+        _ = state;
         return .{ .Word = input };
     }
 };

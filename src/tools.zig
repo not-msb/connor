@@ -13,9 +13,10 @@ pub fn push(comptime T: type, allocator: Allocator, slice: []T, value: T) Alloca
     return new;
 }
 
-pub fn index(comptime T: type, comptime idx: usize) fn (slice: anytype) T {
+pub fn index(comptime T: type, comptime S: type, comptime idx: usize) fn (S, slice: anytype) getError(S)!T {
     const gen = struct {
-        fn f(slice: anytype) T {
+        fn f(state: S, slice: anytype) getError(S)!T {
+            _ = state;
             return slice[idx];
         }
     };
@@ -23,23 +24,24 @@ pub fn index(comptime T: type, comptime idx: usize) fn (slice: anytype) T {
     return gen.f;
 }
 
-pub fn indexWith(comptime T: type, comptime W: type, comptime idx: usize) fn (slice: anytype, W) T {
+pub fn unTag(comptime I: type, comptime O: type, comptime S: type, comptime source: @typeInfo(I).Union.tag_type.?) fn (S, I) getError(S)!O {
     const gen = struct {
-        fn f(slice: anytype, with: W) T {
-            _ = with;
-            return slice[idx];
-        }
-    };
-
-    return gen.f;
-}
-
-pub fn unTag(comptime T: type, comptime O: type, comptime source: @typeInfo(T).Union.tag_type.?) fn (T) O {
-    const gen = struct {
-        fn f(input: T) O {
+        fn f(state: S, input: I) getError(S)!O {
+            _ = state;
             return @field(input, @tagName(source));
         }
     };
 
     return gen.f;
+}
+
+pub fn getError(comptime T: type) type {
+    const G = switch (@typeInfo(T)) {
+        .Pointer => |t| t.child,
+        else => T,
+    };
+    return switch (@typeInfo(G)) {
+        .Struct, .Enum, .Union, .Opaque => if (@hasDecl(G, "Error")) G.Error else error{},
+        else => error{},
+    };
 }
