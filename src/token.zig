@@ -32,7 +32,7 @@ pub const Token = union(enum) {
                 replace(byte(u8, Allocator, '{'), @as(Token, .LBracket)),
                 replace(byte(u8, Allocator, '}'), @as(Token, .RBracket)),
                 replace(byte(u8, Allocator, ';'), @as(Token, .SemiColon)),
-                replace(bytes(u8, Allocator, "u8"), Token{ .Type = .U8 }),
+                parseType(),
                 map(takeWhile1(u8, Allocator, std.ascii.isDigit), fromInt),
                 map(takeIdentifier(), fromWord),
             }),
@@ -41,6 +41,13 @@ pub const Token = union(enum) {
 
         const res = if (r) |res| res else @panic("Couldn't tokenize");
         return res.output;
+    }
+
+    fn parseType() Parser(u8, Token, Allocator) {
+        return alt(.{
+            replace(bytes(u8, Allocator, "u8"), Token{ .Type = .U8 }),
+            replace(bytes(u8, Allocator, "u32"), Token{ .Type = .U32 }),
+        });
     }
 
     fn takeIdentifier() Parser(u8, []const u8, Allocator) {
@@ -60,13 +67,11 @@ pub const Token = union(enum) {
         return .{ ._parse = gen.f };
     }
 
-    fn fromInt(state: Allocator, input: []const u8) Allocator.Error!Token {
-        _ = state;
+    fn fromInt(input: []const u8) Token {
         return .{ .Integer = std.fmt.parseInt(usize, input, 10) catch unreachable };
     }
 
-    fn fromWord(state: Allocator, input: []const u8) Allocator.Error!Token {
-        _ = state;
+    fn fromWord(input: []const u8) Token {
         return .{ .Word = input };
     }
 };

@@ -37,10 +37,7 @@ pub fn main() !void {
     const processed = try preprocess(allocator, input);
 
     const tokens = try Token.parse(allocator, processed);
-    //for (tokens) |token| {
-    //    std.debug.print("Token: {}\n", .{token});
-    //}
-
-    const ast = try Ast.parse(allocator, tokens);
-    ast.print(0);
+    const asts = try Ast.parse(allocator, tokens);
+    for (asts) |ast|
+        ast.print(0);
 }

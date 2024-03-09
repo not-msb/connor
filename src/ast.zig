@@ -38,7 +38,7 @@ pub const Ast = struct {
 
     const Function_t = struct { Type, []const u8, void, void, []Ast };
 
-    pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error!Ast {
+    pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error![]Ast {
         var context = Context.init(allocator);
         defer context.deinit();
 
@@ -50,7 +50,10 @@ pub const Ast = struct {
             } },
         } });
 
-        const r = try Ast.p_function(&context, input);
+        const r = try many0(
+            Ast.p_function(),
+            null,
+        ).parse(&context, input);
         const res = if (r) |res| res else @panic("Couldn't parse");
         return res.output;
     }
@@ -77,22 +80,35 @@ pub const Ast = struct {
                 Ast.p_expr(),
                 drain(tag(Token, *Context, .SemiColon)),
             }),
-            tools.index(Ast, *Context, 0),
+            tools.index(Ast, 0),
         );
     }
 
     fn p_int() Parser(Token, Ast, *Context) {
         return map(
-            map(tag(Token, *Context, .Integer), tools.unTag(Token, usize, *Context, .Integer)),
+            map(tag(Token, *Context, .Integer), tools.unTag(Token, usize, .Integer)),
             Ast.fromInt,
         );
     }
 
     fn p_word() Parser(Token, Ast, *Context) {
-        return map(
-            map(tag(Token, *Context, .Word), tools.unTag(Token, []const u8, *Context, .Word)),
-            Ast.fromWord,
-        );
+        const gen = struct {
+            fn f(state: *Context, input: []const Token) Parser(Token, Ast, *Context).Result {
+                const result = try map(tag(Token, *Context, .Word), tools.unTag(Token, []const u8, .Word)).parse(state, input) orelse return null;
+
+                const output = Ast{
+                    .node = .{ .Identifier = result.output },
+                    .ty = state.get(result.output).?,
+                };
+
+                return .{
+                    .input = result.input,
+                    .output = output,
+                };
+            }
+        };
+
+        return .{ ._parse = gen.f };
     }
 
     fn p_call() Parser(Token, Ast, *Context) {
@@ -133,41 +149,60 @@ pub const Ast = struct {
                 many0(Ast.p_stmt(), null),
                 drain(tag(Token, *Context, .RBracket)),
             }),
-            tools.index([]Ast, *Context, 1),
+            tools.index([]Ast, 1),
         );
     }
 
-    fn p_function(state: *Context, _input: []const Token) Parser(Token, Ast, *Context).Result {
-        var input = _input;
+    fn p_function() Parser(Token, Ast, *Context) {
+        const gen = struct {
+            fn f(state: *Context, _input: []const Token) Parser(Token, Ast, *Context).Result {
+                var input = _input;
 
-        const prefix = try sequence(.{
-            map(tag(Token, void, .Type), tools.unTag(Token, Type, void, .Type)),
-            map(tag(Token, void, .Word), tools.unTag(Token, []const u8, void, .Word)),
-            drain(tag(Token, void, .LParen)),
-            drain(tag(Token, void, .RParen)),
-        }).parse(undefined, input) orelse return null;
+                const prefix = try sequence(.{
+                    map(tag(Token, void, .Type), tools.unTag(Token, Type, .Type)),
+                    map(tag(Token, void, .Word), tools.unTag(Token, []const u8, .Word)),
+                    drain(tag(Token, void, .LParen)),
+                    drain(tag(Token, void, .RParen)),
+                }).parse(undefined, input) orelse return null;
 
-        input = prefix.input;
-        const output = prefix.output;
+                input = prefix.input;
+                const ret_ty = prefix.output[0];
+                const name = prefix.output[1];
 
-        var context = try state.clone();
-        defer context.deinit();
+                var context = try state.clone();
+                defer context.deinit();
 
-        try context.put("return", .{ .Function = .{
-            .params = &[1]Type{output[0]},
-            .ret = &.NoReturn,
-        } });
+                try context.put("return", .{ .Function = .{
+                    .params = &[1]Type{ret_ty},
+                    .ret = &.NoReturn,
+                } });
 
-        const block = try Ast.p_block().parse(&context, input) orelse return null;
-        for (block.output) |*expr|
-            expr.unComp(null);
-        const ast = try Ast.fromFunction(state, .{ output[0], output[1], output[2], output[3], block.output });
-        ast.check();
+                const block = try Ast.p_block().parse(&context, input) orelse return null;
+                for (block.output) |*expr|
+                    expr.unComp(null);
 
-        return .{
-            .input = block.input,
-            .output = ast,
+                const ast = Ast{
+                    .node = .{ .Function = .{
+                        .name = name,
+                        .exprs = block.output,
+                    } },
+                    .ty = .{ .Function = .{
+                        .params = try state.allocator.alloc(Type, 0),
+                        .ret = try tools.box(state.allocator, ret_ty),
+                    } },
+                };
+
+                try state.put(name, ast.ty);
+                ast.check();
+
+                return .{
+                    .input = block.input,
+                    .output = ast,
+                };
+            }
         };
+
+        return .{ ._parse = gen.f };
     }
 
     pub fn check(self: Ast) void {
@@ -202,34 +237,10 @@ pub const Ast = struct {
         }
     }
 
-    fn fromInt(state: *Context, source: usize) Context.Error!Ast {
-        _ = state;
+    fn fromInt(source: usize) Ast {
         return .{
             .node = .{ .Integer = source },
             .ty = .CompInt,
-        };
-    }
-
-    fn fromWord(state: *Context, source: []const u8) Context.Error!Ast {
-        return .{
-            .node = .{ .Identifier = source },
-            .ty = state.get(source).?,
-        };
-    }
-
-    fn fromFunction(ctx: *Context, source: Function_t) Context.Error!Ast {
-        const ty = .{ .Function = .{
-            .params = try ctx.allocator.alloc(Type, 0),
-            .ret = try tools.box(ctx.allocator, source[0]),
-        } };
-        try ctx.put(source[1], ty);
-
-        return .{
-            .node = .{ .Function = .{
-                .name = source[1],
-                .exprs = source[4],
-            } },
-            .ty = ty,
         };
     }
 

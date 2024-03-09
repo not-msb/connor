@@ -13,10 +13,9 @@ pub fn push(comptime T: type, allocator: Allocator, slice: []T, value: T) Alloca
     return new;
 }
 
-pub fn index(comptime T: type, comptime S: type, comptime idx: usize) fn (S, slice: anytype) getError(S)!T {
+pub fn index(comptime T: type, comptime idx: usize) fn (slice: anytype) T {
     const gen = struct {
-        fn f(state: S, slice: anytype) getError(S)!T {
-            _ = state;
+        fn f(slice: anytype) T {
             return slice[idx];
         }
     };
@@ -24,10 +23,9 @@ pub fn index(comptime T: type, comptime S: type, comptime idx: usize) fn (S, sli
     return gen.f;
 }
 
-pub fn unTag(comptime I: type, comptime O: type, comptime S: type, comptime source: @typeInfo(I).Union.tag_type.?) fn (S, I) getError(S)!O {
+pub fn unTag(comptime I: type, comptime O: type, comptime source: @typeInfo(I).Union.tag_type.?) fn (I) O {
     const gen = struct {
-        fn f(state: S, input: I) getError(S)!O {
-            _ = state;
+        fn f(input: I) O {
             return @field(input, @tagName(source));
         }
     };

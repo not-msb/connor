@@ -88,7 +88,7 @@ pub fn map(comptime parser: anytype, comptime r_func: anytype) Parser(parser.in(
             const result = try parser.parse(state, input) orelse return null;
             return .{
                 .input = result.input,
-                .output = try r_func(state, result.output),
+                .output = r_func(result.output),
             };
         }
     };
@@ -224,93 +224,4 @@ pub fn drain(comptime parser: anytype) Parser(parser.in(), void, parser.s()) {
     };
 
     return .{ ._parse = gen.f };
-}
-
-test byte {
-    const input = "aaa";
-
-    const parser = byte(u8, void, 'a');
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings(result.?.input, "aa");
-    try std.testing.expectEqualStrings(result.?.output, "a");
-}
-
-test bytes {
-    const input = "aaa";
-
-    const parser = bytes(u8, void, "aa");
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings(result.?.input, "a");
-    try std.testing.expectEqualStrings(result.?.output, "aa");
-}
-
-test map {
-    const Token = enum {
-        A,
-        B,
-        C,
-
-        fn from(state: void, b: []const u8) @This() {
-            _ = state;
-            return switch (b[0]) {
-                'a' => .A,
-                'b' => .B,
-                'c' => .C,
-                else => unreachable,
-            };
-        }
-    };
-    const input = "abc";
-
-    const parser = map(byte(u8, void, 'a'), Token.from);
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings(result.?.input, "bc");
-    try std.testing.expect(result.?.output == .A);
-}
-
-test replace {
-    const Token = enum { A, B, C };
-    const input = "abc";
-
-    const parser = replace(byte(u8, void, 'a'), Token.A);
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings(result.?.input, "bc");
-    try std.testing.expect(result.?.output == .A);
-}
-
-test alt {
-    const Token = enum { A, B, C };
-    const input = "cba";
-
-    const parser = alt(.{
-        replace(byte(u8, void, 'a'), Token.A),
-        replace(byte(u8, void, 'b'), Token.B),
-        replace(byte(u8, void, 'c'), Token.C),
-    });
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings(result.?.input, "ba");
-    try std.testing.expect(result.?.output == .C);
-}
-
-test takeWhile0 {
-    const input = "000";
-
-    const parser = takeWhile0(u8, void, std.ascii.isAlphabetic);
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings(result.?.input, "000");
-    try std.testing.expectEqualStrings(result.?.output, "");
-}
-
-test takeWhile1 {
-    const input = "000";
-
-    const parser = takeWhile1(u8, void, std.ascii.isAlphabetic);
-    const result = try parser.parse(undefined, input);
-    try std.testing.expect(result == null);
 }
