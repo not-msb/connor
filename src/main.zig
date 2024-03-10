@@ -10,16 +10,13 @@ fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u
     var i: usize = 0;
 
     while (i < input.len) {
-        while (std.mem.startsWith(u8, input[i..], "//"))
-            while (i < input.len and input[i] != '\n') : (i += 1) {};
-
         const start = i;
-        while (i < input.len and input[i] != '\n') : (i += 1) {}
-        if (i != input.len) i += 1;
-
+        while (i < input.len and !std.mem.startsWith(u8, input[i..], "//")) : (i += 1) {}
         const len = i - start;
+
+        while (i < input.len and input[i] != '\n') : (i += 1) {}
         output = try allocator.realloc(output, output.len + len);
-        @memcpy(output[output.len - len ..], input[start..i]);
+        @memcpy(output[output.len - len ..], input[start..start+len]);
     }
 
     return output;

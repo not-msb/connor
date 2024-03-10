@@ -11,61 +11,65 @@ const Parser = parser.Parser;
 const alt = parser.alt;
 const tag = parser.tag;
 const map = parser.map;
+const mapWith = parser.mapWith;
 const drain = parser.drain;
 const many0 = parser.many0;
+const delimited0 = parser.delimited0;
 const sequence = parser.sequence;
 
-const Node = union(enum) {
+pub const Ast = union(enum) {
+    const Param_t = struct {
+        name: []const u8,
+        ty: Type,
+    };
+
     const Function_t = struct {
         name: []const u8,
+        params: []const Param_t,
         exprs: []Ast,
+        ret: Type,
     };
 
     const Call_t = struct {
         f: *Ast,
-        expr: *Ast,
+        exprs: []Ast,
+    };
+
+    const BinOpKind = enum {
+        Add,
+    };
+
+    const BinOp_t = struct {
+        kind: BinOpKind,
+        lhs: *Ast,
+        rhs: *Ast,
     };
 
     Integer: usize,
     Identifier: []const u8,
     Call: Call_t,
     Function: Function_t,
-};
-
-pub const Ast = struct {
-    node: Node,
-    ty: Type,
-
-    const Function_t = struct { Type, []const u8, void, void, []Ast };
+    BinOp: BinOp_t,
+    Return: *Ast,
 
     pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error![]Ast {
-        var context = Context.init(allocator);
-        defer context.deinit();
-
-        try context.put("add_u8", .{ .Function = .{
-            .params = &[_]Type{.U8},
-            .ret = &Type{ .Function = .{
-                .params = &[_]Type{.U8},
-                .ret = &.U8,
-            } },
-        } });
-
-        const r = try many0(
+        const result = try many0(
             Ast.p_function(),
             null,
-        ).parse(&context, input);
-        const res = if (r) |res| res else @panic("Couldn't parse");
-        return res.output;
+        ).parse(allocator, input) orelse @panic("Couldn't parse");
+        return result.output;
     }
 
-    fn p_expr() Parser(Token, Ast, *Context) {
+    fn p_expr() Parser(Token, Ast) {
         const gen = struct {
-            fn f(state: *Context, input: []const Token) Parser(Token, Ast, *Context).Result {
-                if (try Ast.p_call().parse(state, input)) |result|
+            fn f(allocator: Allocator, input: []const Token) Parser(Token, Ast).Result {
+                if (try Ast.p_binOp().parse(allocator, input)) |result|
                     return result;
-                if (try Ast.p_int().parse(state, input)) |result|
+                if (try Ast.p_return().parse(allocator, input)) |result|
                     return result;
-                if (try Ast.p_word().parse(state, input)) |result|
+                if (try Ast.p_call().parse(allocator, input)) |result|
+                    return result;
+                if (try Ast.p_int().parse(allocator, input)) |result|
                     return result;
                 return null;
             }
@@ -74,65 +78,67 @@ pub const Ast = struct {
         return .{ ._parse = gen.f };
     }
 
-    fn p_stmt() Parser(Token, Ast, *Context) {
+    fn p_stmt() Parser(Token, Ast) {
         return map(
             sequence(.{
                 Ast.p_expr(),
-                drain(tag(Token, *Context, .SemiColon)),
+                drain(tag(Token, .SemiColon)),
             }),
             tools.index(Ast, 0),
         );
     }
 
-    fn p_int() Parser(Token, Ast, *Context) {
+    fn p_int() Parser(Token, Ast) {
         return map(
-            map(tag(Token, *Context, .Integer), tools.unTag(Token, usize, .Integer)),
+            map(tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
             Ast.fromInt,
         );
     }
 
-    fn p_word() Parser(Token, Ast, *Context) {
-        const gen = struct {
-            fn f(state: *Context, input: []const Token) Parser(Token, Ast, *Context).Result {
-                const result = try map(tag(Token, *Context, .Word), tools.unTag(Token, []const u8, .Word)).parse(state, input) orelse return null;
-
-                const output = Ast{
-                    .node = .{ .Identifier = result.output },
-                    .ty = state.get(result.output).?,
-                };
-
-                return .{
-                    .input = result.input,
-                    .output = output,
-                };
-            }
-        };
-
-        return .{ ._parse = gen.f };
+    fn p_word() Parser(Token, Ast) {
+        return map(
+            map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
+            Ast.fromWord,
+        );
     }
 
-    fn p_call() Parser(Token, Ast, *Context) {
+    fn p_return() Parser(Token, Ast) {
+        return mapWith(
+            sequence(.{
+                drain(tag(Token, .Return)),
+                p_expr(),
+            }),
+            fromReturn,
+        );
+    }
+
+    fn p_binOp() Parser(Token, Ast) {
+        return mapWith(
+            sequence(.{
+                alt(.{
+                    tag(Token, .Add),
+                }),
+                p_expr(),
+                p_expr(),
+            }),
+            fromBinOp,
+        );
+    }
+
+    fn p_call() Parser(Token, Ast) {
         const gen = struct {
-            fn f(state: *Context, _input: []const Token) Parser(Token, Ast, *Context).Result {
-                var input = _input;
-                var output: Ast = undefined;
+            fn f(allocator: Allocator, _input: []const Token) Parser(Token, Ast).Result {
+                const word = try p_word().parse(allocator, _input) orelse return null;
+                var input = word.input;
+                var output = word.output;
 
-                if (try p_word().parse(state, input)) |result| {
-                    input = result.input;
-                    output = result.output;
-                } else return null;
-
-                while (output.ty == .Function) {
-                    const result = try p_expr().parse(state, input) orelse break;
+                while (try p_tuple().parse(allocator, input)) |result| {
                     input = result.input;
 
-                    output = .{
-                        .node = .{ .Call = .{
-                            .f = try tools.box(state.allocator, output),
-                            .expr = try tools.box(state.allocator, result.output),
-                        } },
-                        .ty = output.ty.Function.ret.*,
-                    };
+                    output = .{ .Call = .{
+                        .f = try tools.box(allocator, output),
+                        .exprs = result.output,
+                    } };
                 }
 
                 return .{ .input = input, .output = output };
@@ -142,113 +148,111 @@ pub const Ast = struct {
         return .{ ._parse = gen.f };
     }
 
-    fn p_block() Parser(Token, []Ast, *Context) {
+    fn p_tuple() Parser(Token, []Ast) {
         return map(
             sequence(.{
-                drain(tag(Token, *Context, .LBracket)),
-                many0(Ast.p_stmt(), null),
-                drain(tag(Token, *Context, .RBracket)),
+                drain(tag(Token, .LParen)),
+                delimited0(Ast.p_expr(), tag(Token, .Comma)),
+                drain(tag(Token, .RParen)),
             }),
             tools.index([]Ast, 1),
         );
     }
 
-    fn p_function() Parser(Token, Ast, *Context) {
+    fn p_param() Parser(Token, Param_t) {
+        return map(
+            sequence(.{
+                map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
+                map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
+            }),
+            fromParam,
+        );
+    }
+
+    fn p_params() Parser(Token, []Param_t) {
+        return map(
+            sequence(.{
+                drain(tag(Token, .LParen)),
+                delimited0(
+                    Ast.p_param(),
+                    tag(Token, .Comma)
+                ),
+                drain(tag(Token, .RParen)),
+            }),
+            tools.index([]Param_t, 1),
+        );
+    }
+
+    fn p_block() Parser(Token, []Ast) {
+        return map(
+            sequence(.{
+                drain(tag(Token, .LBracket)),
+                many0(Ast.p_stmt(), null),
+                drain(tag(Token, .RBracket)),
+            }),
+            tools.index([]Ast, 1),
+        );
+    }
+
+    fn p_function() Parser(Token, Ast) {
         const gen = struct {
-            fn f(state: *Context, _input: []const Token) Parser(Token, Ast, *Context).Result {
-                var input = _input;
-
-                const prefix = try sequence(.{
-                    map(tag(Token, void, .Type), tools.unTag(Token, Type, .Type)),
-                    map(tag(Token, void, .Word), tools.unTag(Token, []const u8, .Word)),
-                    drain(tag(Token, void, .LParen)),
-                    drain(tag(Token, void, .RParen)),
-                }).parse(undefined, input) orelse return null;
-
-                input = prefix.input;
-                const ret_ty = prefix.output[0];
-                const name = prefix.output[1];
-
-                var context = try state.clone();
-                defer context.deinit();
-
-                try context.put("return", .{ .Function = .{
-                    .params = &[1]Type{ret_ty},
-                    .ret = &.NoReturn,
-                } });
-
-                const block = try Ast.p_block().parse(&context, input) orelse return null;
-                for (block.output) |*expr|
-                    expr.unComp(null);
-
-                const ast = Ast{
-                    .node = .{ .Function = .{
-                        .name = name,
-                        .exprs = block.output,
-                    } },
-                    .ty = .{ .Function = .{
-                        .params = try state.allocator.alloc(Type, 0),
-                        .ret = try tools.box(state.allocator, ret_ty),
-                    } },
-                };
-
-                try state.put(name, ast.ty);
-                ast.check();
-
-                return .{
-                    .input = block.input,
-                    .output = ast,
-                };
+            fn f(allocator: Allocator, input: []const Token) Parser(Token, Ast).Result {
+                return map(
+                    sequence(.{
+                        map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
+                        map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
+                        Ast.p_params(),
+                        Ast.p_block(),
+                    }),
+                    fromFunction,
+                ).parse(allocator, input);
             }
         };
 
         return .{ ._parse = gen.f };
     }
 
-    pub fn check(self: Ast) void {
-        return switch (self.node) {
-            .Integer, .Identifier => {},
-            .Call => |tuple| {
-                tuple.f.check();
-                tuple.expr.check();
-
-                const params = tuple.f.ty.Function.params;
-                const ty = tuple.expr.ty;
-
-                if (!ty.coercible(.{ .Tuple = params })) @panic("Incompatible types in call");
-            },
-            .Function => |tuple| for (tuple.exprs) |expr|
-                expr.check(),
-        };
-    }
-
-    pub fn unComp(self: *Ast, expected: ?Type) void {
-        switch (self.node) {
-            .Integer, .Identifier => {
-                if (expected) |ty| self.ty = ty;
-            },
-            .Call => |tuple| {
-                const params = tuple.f.ty.Function.params;
-                tuple.expr.unComp(if (params.len == 0) null else params[0]);
-                tuple.f.unComp(null);
-            },
-            .Function => |tuple| for (0..tuple.exprs.len) |i|
-                tuple.exprs[i].unComp(null),
-        }
-    }
-
     fn fromInt(source: usize) Ast {
-        return .{
-            .node = .{ .Integer = source },
-            .ty = .CompInt,
-        };
+        return .{ .Integer = source };
+    }
+
+    fn fromWord(source: []const u8) Ast {
+        return .{ .Identifier = source };
+    }
+
+    fn fromParam(source: struct { Type, []const u8 }) Param_t {
+        return .{ .name = source[1], .ty = source[0] };
+    }
+
+    fn fromReturn(allocator: Allocator, source: struct { void, Ast }) Allocator.Error!Ast {
+        return .{ .Return = try tools.box(allocator, source[1]) };
+    }
+
+    fn fromBinOp(allocator: Allocator, source: struct { Token, Ast, Ast }) Allocator.Error!Ast {
+        return .{ .BinOp = .{
+            .kind = switch (source[0]) {
+                .Add => .Add,
+                else => unreachable,
+            },
+            .lhs = try tools.box(allocator, source[1]),
+            .rhs = try tools.box(allocator, source[2]),
+        } };
+    }
+
+    fn fromFunction(source: struct { Type, []const u8, []Param_t, []Ast }) Ast {
+        return .{ .Function = .{
+            .name = source[1],
+            .params = source[2],
+            .exprs = source[3],
+            .ret = source[0],
+        } };
     }
 
     // Debug only
     pub fn print(self: Ast, level: usize) void {
         const p = std.debug.print;
 
-        switch (self.node) {
+        switch (self) {
             .Integer => |int| {
                 for (0..level) |_| p("    ", .{});
                 p("{d}\n", .{int});
@@ -261,7 +265,8 @@ pub const Ast = struct {
                 for (0..level) |_| p("    ", .{});
                 p("Call:\n", .{});
                 tuple.f.print(level + 1);
-                tuple.expr.print(level + 1);
+                for (tuple.exprs) |expr|
+                    expr.print(level + 1);
             },
             .Function => |tuple| {
                 for (0..level) |_| p("    ", .{});
@@ -269,9 +274,17 @@ pub const Ast = struct {
                 for (tuple.exprs) |expr|
                     expr.print(level + 1);
             },
+            .BinOp => |tuple| {
+                for (0..level) |_| p("    ", .{});
+                p("BinOp: {s}\n", .{@tagName(tuple.kind)});
+                tuple.lhs.print(level + 1);
+                tuple.rhs.print(level + 1);
+            },
+            .Return => |value| {
+                for (0..level) |_| p("    ", .{});
+                p("Return\n", .{});
+                value.print(level + 1);
+            },
         }
-
-        //for (0..level) |_| p("    ", .{});
-        //std.debug.print("Type: {any}\n", .{self.ty});
     }
 };

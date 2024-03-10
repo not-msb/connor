@@ -2,7 +2,11 @@ u32 maxU32() {
     return 4294967295;
 }
 
+u8 add(u8 a, u8 b) {
+    return + a b;
+}
+
 // Entry function
 u8 main() {
-    return add_u8 1 2;
+    return add(1, 2);
 }

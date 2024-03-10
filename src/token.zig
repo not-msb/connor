@@ -15,45 +15,57 @@ const takeWhile1 = parser.takeWhile1;
 const many0 = parser.many0;
 
 pub const Token = union(enum) {
+    Add,
     LParen,
     RParen,
     LBracket,
     RBracket,
     SemiColon,
+    Comma,
+    Return,
     Type: Type,
     Integer: usize,
     Word: []const u8,
 
-    pub fn parse(allocator: Allocator, _input: []const u8) Allocator.Error![]Token {
+    pub fn parse(allocator: Allocator, input: []const u8) Allocator.Error![]Token {
         const r = try many0(
             alt(.{
-                replace(byte(u8, Allocator, '('), @as(Token, .LParen)),
-                replace(byte(u8, Allocator, ')'), @as(Token, .RParen)),
-                replace(byte(u8, Allocator, '{'), @as(Token, .LBracket)),
-                replace(byte(u8, Allocator, '}'), @as(Token, .RBracket)),
-                replace(byte(u8, Allocator, ';'), @as(Token, .SemiColon)),
+                parseBinOp(),
+                replace(byte(u8, '('), @as(Token, .LParen)),
+                replace(byte(u8, ')'), @as(Token, .RParen)),
+                replace(byte(u8, '{'), @as(Token, .LBracket)),
+                replace(byte(u8, '}'), @as(Token, .RBracket)),
+                replace(byte(u8, ';'), @as(Token, .SemiColon)),
+                replace(byte(u8, ','), @as(Token, .Comma)),
+                replace(bytes(u8, "return"), @as(Token, .Return)),
                 parseType(),
-                map(takeWhile1(u8, Allocator, std.ascii.isDigit), fromInt),
+                map(takeWhile1(u8, std.ascii.isDigit), fromInt),
                 map(takeIdentifier(), fromWord),
             }),
             std.ascii.isWhitespace,
-        ).parse(allocator, _input);
+        ).parse(allocator, input);
 
         const res = if (r) |res| res else @panic("Couldn't tokenize");
         return res.output;
     }
 
-    fn parseType() Parser(u8, Token, Allocator) {
+    fn parseType() Parser(u8, Token) {
         return alt(.{
-            replace(bytes(u8, Allocator, "u8"), Token{ .Type = .U8 }),
-            replace(bytes(u8, Allocator, "u32"), Token{ .Type = .U32 }),
+            replace(bytes(u8, "u8"), Token{ .Type = .U8 }),
+            replace(bytes(u8, "u32"), Token{ .Type = .U32 }),
         });
     }
 
-    fn takeIdentifier() Parser(u8, []const u8, Allocator) {
+    fn parseBinOp() Parser(u8, Token) {
+        return alt(.{
+            replace(byte(u8, '+'), @as(Token, .Add)),
+        });
+    }
+
+    fn takeIdentifier() Parser(u8, []const u8) {
         const gen = struct {
-            fn f(state: Allocator, input: []const u8) Parser(u8, []const u8, Allocator).Result {
-                _ = state;
+            fn f(allocator: Allocator, input: []const u8) Parser(u8, []const u8).Result {
+                _ = allocator;
                 var i: usize = 0;
                 while (i < input.len and (std.ascii.isAlphabetic(input[i]) or input[i] == '_')) : (i += 1) {}
                 while (i < input.len and (std.ascii.isAlphabetic(input[i]) or std.ascii.isDigit(input[i]) or input[i] == '_')) : (i += 1) {}
