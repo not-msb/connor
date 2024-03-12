@@ -191,7 +191,13 @@ pub const Ir = struct {
         return blocks;
     }
 
-    pub fn compile(self: Ir, state: *State) !Storage {
+    pub fn compile(allocator: Allocator, self: []const Ir) !void {
+        var state = State.init(allocator);
+        for (self) |ir|
+            _ = try ir.print(&state);
+    }
+
+    fn print(self: Ir, state: *State) !Storage {
         switch (self.node) {
             .Integer => |value| {
                 const dst = state.alloc();
@@ -206,10 +212,10 @@ pub const Ir = struct {
                 const params = tuple.f.ty.Function.params;
                 var args = try state.allocator.alloc(Storage, tuple.exprs.len);
                 for (tuple.exprs, 0..) |expr, i|
-                    args[i] = try expr.compile(state);
+                    args[i] = try expr.print(state);
 
                 const dst = state.alloc();
-                const src = try tuple.f.compile(state);
+                const src = try tuple.f.print(state);
                 try stdout.print("\t{s} ={s} call {s} (", .{
                     try dst.fmt(state.allocator),
                     self.ty.abiFmt(),
@@ -239,7 +245,7 @@ pub const Ir = struct {
                 for (tuple.blocks, 0..) |block, i| {
                     try stdout.print("@L{d}\n", .{i});
                     for (block) |expr|
-                        _ = try expr.compile(&s);
+                        _ = try expr.print(&s);
                 }
                 try stdout.print("}}\n", .{});
 
@@ -247,8 +253,8 @@ pub const Ir = struct {
             },
             .BinOp => |tuple| {
                 const dst = state.alloc();
-                const lhs = try tuple.lhs.compile(state);
-                const rhs = try tuple.rhs.compile(state);
+                const lhs = try tuple.lhs.print(state);
+                const rhs = try tuple.rhs.print(state);
                 try stdout.print("\t{s} ={s} {s} {s}, {s}\n", .{
                     try dst.fmt(state.allocator),
                     self.ty.baseFmt(),
@@ -259,7 +265,7 @@ pub const Ir = struct {
                 return dst;
             },
             .Return => |value| {
-                const src = try value.compile(state);
+                const src = try value.print(state);
                 try stdout.print("\tret {s}\n", .{try src.fmt(state.allocator)});
 
                 return undefined;

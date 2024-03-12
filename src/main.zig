@@ -4,8 +4,7 @@ const cwd = std.fs.cwd;
 const Allocator = std.mem.Allocator;
 const Token = lib.Token;
 const Ast = lib.Ast;
-const State = @import("ir.zig").State;
-const Ir = @import("ir.zig").Ir;
+const Ir = lib.Ir;
 const Context = lib.Context;
 const append = lib.tools.append;
 
@@ -44,7 +43,5 @@ pub fn main() !void {
         try context.check(ast, null);
 
     const irs = try Ir.from(allocator, asts);
-    var state = State.init(allocator);
-    for (irs) |ir|
-        _ = try ir.compile(&state);
+    try Ir.compile(allocator, irs);
 }

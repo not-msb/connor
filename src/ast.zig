@@ -31,14 +31,14 @@ pub const Ast = union(enum) {
     const Function_t = struct {
         name: []const u8,
         params: []const Param,
-        exprs: []Ast,
+        exprs: []const Ast,
         attr: Attr,
         ret: Type,
     };
 
     const Call_t = struct {
-        f: *Ast,
-        exprs: []Ast,
+        f: *const Ast,
+        exprs: []const Ast,
     };
 
     pub const BinOpKind = enum {
@@ -53,8 +53,8 @@ pub const Ast = union(enum) {
 
     const BinOp_t = struct {
         kind: BinOpKind,
-        lhs: *Ast,
-        rhs: *Ast,
+        lhs: *const Ast,
+        rhs: *const Ast,
     };
 
     Integer: usize,
@@ -62,7 +62,7 @@ pub const Ast = union(enum) {
     Call: Call_t,
     Function: Function_t,
     BinOp: BinOp_t,
-    Return: *Ast,
+    Return: *const Ast,
 
     pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error![]Ast {
         const result = try many0(
