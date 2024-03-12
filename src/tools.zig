@@ -7,6 +7,12 @@ pub fn box(allocator: Allocator, value: anytype) Allocator.Error!*@TypeOf(value)
     return boxed;
 }
 
+pub fn append(comptime T: type, allocator: Allocator, slice: []T, value: []const T) Allocator.Error![]T {
+    var new = try allocator.realloc(slice, slice.len + value.len);
+    @memcpy(new[new.len-value.len..], value);
+    return new;
+}
+
 pub fn push(comptime T: type, allocator: Allocator, slice: []T, value: T) Allocator.Error![]T {
     var new = try allocator.realloc(slice, slice.len + 1);
     new[slice.len] = value;

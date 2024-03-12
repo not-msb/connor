@@ -4,6 +4,10 @@ const cwd = std.fs.cwd;
 const Allocator = std.mem.Allocator;
 const Token = lib.Token;
 const Ast = lib.Ast;
+const State = @import("ir.zig").State;
+const Ir = @import("ir.zig").Ir;
+const Context = lib.Context;
+const append = lib.tools.append;
 
 fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u8 {
     var output = try allocator.alloc(u8, 0);
@@ -15,8 +19,7 @@ fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u
         const len = i - start;
 
         while (i < input.len and input[i] != '\n') : (i += 1) {}
-        output = try allocator.realloc(output, output.len + len);
-        @memcpy(output[output.len - len ..], input[start..start+len]);
+        output = try append(u8, allocator, output, input[start..start+len]);
     }
 
     return output;
@@ -35,6 +38,13 @@ pub fn main() !void {
 
     const tokens = try Token.parse(allocator, processed);
     const asts = try Ast.parse(allocator, tokens);
+
+    var context = Context.init(allocator);
     for (asts) |ast|
-        ast.print(0);
+        try context.check(ast, null);
+
+    const irs = try Ir.from(allocator, asts);
+    var state = State.init(allocator);
+    for (irs) |ir|
+        _ = try ir.compile(&state);
 }

@@ -262,3 +262,15 @@ pub fn drain(comptime parser: anytype) Parser(parser.in(), void) {
 
     return .{ ._parse = gen.f };
 }
+
+pub fn opt(comptime parser: anytype) Parser(parser.in(), ?parser.out()) {
+    const gen = struct {
+        fn f(allocator: Allocator, input: []const parser.in()) Parser(parser.in(), ?parser.out()).Result {
+            return if (try parser.parse(allocator, input)) |result|
+                .{ .input = result.input, .output = result.output } else
+                .{ .input = input, .output = null };
+        }
+    };
+
+    return .{ ._parse = gen.f };
+}

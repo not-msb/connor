@@ -7,6 +7,7 @@ u8 add(u8 a, u8 b) {
 }
 
 // Entry function
-u8 main() {
+export u8 main() {
+    return 100;
     return add(1, 2);
 }

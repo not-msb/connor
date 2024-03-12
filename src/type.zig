@@ -7,9 +7,39 @@ pub const Type = union(enum) {
     },
     Tuple: []const Type,
     NoReturn,
-    CompInt,
     U8,
     U32,
+
+    pub fn isNumeric(self: Type) bool {
+        return switch (self) {
+            .U8, .U32 => true,
+            else => false,
+        };
+    }
+
+    pub fn baseFmt(self: Type) []const u8 {
+        return switch (self) {
+            .U8 => "w",
+            .U32 => "w",
+            else => unreachable,
+        };
+    }
+
+    pub fn extFmt(self: Type) []const u8 {
+        return switch (self) {
+            .U8 => "b",
+            .U32 => "w",
+            else => unreachable,
+        };
+    }
+
+    pub fn abiFmt(self: Type) []const u8 {
+        return switch (self) {
+            .U8 => "ub",
+            .U32 => "w",
+            else => unreachable,
+        };
+    }
 
     pub fn eql(self: Type, rhs: Type) bool {
         return switch (self) {
@@ -26,7 +56,6 @@ pub const Type = union(enum) {
                     if (!(a[i].coercible(b[i]))) return false;
                 return true;
             },
-            .CompInt => rhs == .CompInt,
             .U8 => rhs == .U8,
             .U32 => rhs == .U32,
             else => false,
@@ -39,7 +68,6 @@ pub const Type = union(enum) {
 
         return switch (self) {
             .NoReturn => true,
-            .CompInt => rhs == .U8 or rhs == .U32,
             else => false,
         };
     }

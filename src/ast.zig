@@ -12,21 +12,27 @@ const alt = parser.alt;
 const tag = parser.tag;
 const map = parser.map;
 const mapWith = parser.mapWith;
-const drain = parser.drain;
 const many0 = parser.many0;
 const delimited0 = parser.delimited0;
 const sequence = parser.sequence;
+const drain = parser.drain;
+const opt = parser.opt;
 
 pub const Ast = union(enum) {
-    const Param_t = struct {
+    pub const Param = struct {
         name: []const u8,
         ty: Type,
     };
 
+    pub const Attr = struct {
+        _export: bool,
+    };
+
     const Function_t = struct {
         name: []const u8,
-        params: []const Param_t,
+        params: []const Param,
         exprs: []Ast,
+        attr: Attr,
         ret: Type,
     };
 
@@ -35,8 +41,14 @@ pub const Ast = union(enum) {
         exprs: []Ast,
     };
 
-    const BinOpKind = enum {
+    pub const BinOpKind = enum {
         Add,
+
+        pub fn fmt(self: BinOpKind) []const u8 {
+            return switch (self) {
+                .Add => "add",
+            };
+        }
     };
 
     const BinOp_t = struct {
@@ -159,7 +171,7 @@ pub const Ast = union(enum) {
         );
     }
 
-    fn p_param() Parser(Token, Param_t) {
+    fn p_param() Parser(Token, Param) {
         return map(
             sequence(.{
                 map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
@@ -169,7 +181,7 @@ pub const Ast = union(enum) {
         );
     }
 
-    fn p_params() Parser(Token, []Param_t) {
+    fn p_params() Parser(Token, []Param) {
         return map(
             sequence(.{
                 drain(tag(Token, .LParen)),
@@ -179,7 +191,7 @@ pub const Ast = union(enum) {
                 ),
                 drain(tag(Token, .RParen)),
             }),
-            tools.index([]Param_t, 1),
+            tools.index([]Param, 1),
         );
     }
 
@@ -195,21 +207,16 @@ pub const Ast = union(enum) {
     }
 
     fn p_function() Parser(Token, Ast) {
-        const gen = struct {
-            fn f(allocator: Allocator, input: []const Token) Parser(Token, Ast).Result {
-                return map(
-                    sequence(.{
-                        map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
-                        map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
-                        Ast.p_params(),
-                        Ast.p_block(),
-                    }),
-                    fromFunction,
-                ).parse(allocator, input);
-            }
-        };
-
-        return .{ ._parse = gen.f };
+        return map(
+            sequence(.{
+                opt(drain(tag(Token, .Export))),
+                map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
+                map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
+                Ast.p_params(),
+                Ast.p_block(),
+            }),
+            fromFunction,
+        );
     }
 
     fn fromInt(source: usize) Ast {
@@ -220,7 +227,7 @@ pub const Ast = union(enum) {
         return .{ .Identifier = source };
     }
 
-    fn fromParam(source: struct { Type, []const u8 }) Param_t {
+    fn fromParam(source: struct { Type, []const u8 }) Param {
         return .{ .name = source[1], .ty = source[0] };
     }
 
@@ -239,52 +246,15 @@ pub const Ast = union(enum) {
         } };
     }
 
-    fn fromFunction(source: struct { Type, []const u8, []Param_t, []Ast }) Ast {
+    fn fromFunction(source: struct { ?void, Type, []const u8, []Param, []Ast }) Ast {
         return .{ .Function = .{
-            .name = source[1],
-            .params = source[2],
-            .exprs = source[3],
-            .ret = source[0],
+            .name = source[2],
+            .params = source[3],
+            .exprs = source[4],
+            .attr = .{
+                ._export = source[0] != null,
+            },
+            .ret = source[1],
         } };
-    }
-
-    // Debug only
-    pub fn print(self: Ast, level: usize) void {
-        const p = std.debug.print;
-
-        switch (self) {
-            .Integer => |int| {
-                for (0..level) |_| p("    ", .{});
-                p("{d}\n", .{int});
-            },
-            .Identifier => |ident| {
-                for (0..level) |_| p("    ", .{});
-                p("{s}\n", .{ident});
-            },
-            .Call => |tuple| {
-                for (0..level) |_| p("    ", .{});
-                p("Call:\n", .{});
-                tuple.f.print(level + 1);
-                for (tuple.exprs) |expr|
-                    expr.print(level + 1);
-            },
-            .Function => |tuple| {
-                for (0..level) |_| p("    ", .{});
-                p("Function: {s}\n", .{tuple.name});
-                for (tuple.exprs) |expr|
-                    expr.print(level + 1);
-            },
-            .BinOp => |tuple| {
-                for (0..level) |_| p("    ", .{});
-                p("BinOp: {s}\n", .{@tagName(tuple.kind)});
-                tuple.lhs.print(level + 1);
-                tuple.rhs.print(level + 1);
-            },
-            .Return => |value| {
-                for (0..level) |_| p("    ", .{});
-                p("Return\n", .{});
-                value.print(level + 1);
-            },
-        }
     }
 };
