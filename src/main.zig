@@ -41,7 +41,7 @@ pub fn main() !void {
     const processed = try preprocess(allocator, input);
 
     const file = try File.parse(allocator, processed);
-    try Context.scan(allocator, file); // This prints the ast
+    try Context.scan(allocator, file);
 
     const ir_file = try IrFile.from(allocator, file);
     try ir_file.compile();

@@ -3,8 +3,9 @@ extern noreturn exit(u32);
 
 u32 maxU32() 4294967295;
 u32 add(u32 a, u32 b) a + b;
+u32 inc(u32 a) 1 + a;
 
 // Entry function
 export noreturn _start() {
-    return exit(add(maxU32(), 1));
+    return exit(inc(add(maxU32(), 1)));
 };

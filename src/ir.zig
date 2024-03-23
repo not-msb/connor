@@ -152,15 +152,17 @@ pub const Ir = union(enum) {
                     try list.appendSlice(slice);
                 }
             },
-            .Call => |t| {
+            .Call => |t| b: {
                 const f = try from(ctx, t.f.*);
+                if (f[f.len - 1] == .Return) break :b try list.appendSlice(f);
                 const ret = f[f.len - 1].dest().ty(ctx).Function.ret.*;
 
                 var src = ArrayList(Storage).init(ctx.allocator);
                 for (t.exprs) |expr| {
                     const e = try from(ctx, expr);
-                    try src.append(e[e.len - 1].dest());
                     try list.appendSlice(e);
+                    if (e[e.len - 1] == .Return) break :b;
+                    try src.append(e[e.len - 1].dest());
                 }
 
                 try list.append(.{ .Call = .{
@@ -169,12 +171,16 @@ pub const Ir = union(enum) {
                     .src = try src.toOwnedSlice(),
                 } });
             },
-            .BinOp => |t| {
+            .BinOp => |t| b: {
                 const lhs = try from(ctx, t.lhs.*);
                 const rhs = try from(ctx, t.rhs.*);
-                const ty = lhs[lhs.len - 1].dest().ty(ctx); // TODO: Improve Type inference
+
                 try list.appendSlice(lhs);
+                if (lhs[lhs.len - 1] == .Return) break :b;
                 try list.appendSlice(rhs);
+                if (rhs[rhs.len - 1] == .Return) break :b;
+
+                const ty = lhs[lhs.len - 1].dest().ty(ctx).min(rhs[rhs.len - 1].dest().ty(ctx));
                 try list.append(.{ .BinOp = .{
                     .kind = t.kind,
                     .dst = nextStorage(list.items, ty),
@@ -182,9 +188,10 @@ pub const Ir = union(enum) {
                     .rhs = rhs[rhs.len - 1].dest(),
                 } });
             },
-            .Return => |v| {
+            .Return => |v| b: {
                 const ret = try from(ctx, v.*);
                 try list.appendSlice(ret);
+                if (ret[ret.len - 1] == .Return) break :b;
                 try list.append(.{ .Return = ret[ret.len - 1].dest() });
             },
         }
@@ -224,7 +231,7 @@ pub const Ir = union(enum) {
             .Nop => |v| v,
             .BinOp => |t| t.dst,
             .Call => |t| t.dst,
-            .Return => unreachable, // TODO: Handle
+            .Return => unreachable, // This must be enforced
         };
     }
 

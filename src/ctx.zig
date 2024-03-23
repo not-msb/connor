@@ -77,7 +77,7 @@ pub const Context = struct {
 
     fn check(self: *Context, ast: Ast) Allocator.Error!Type {
         switch (ast) {
-            .Integer => return .CompInt,
+            .Integer => return .U64,
             .Identifier => |v| return self.symbols.get(v).?.ty,
             .Block => |v| {
                 var ret: ?Type = null;
@@ -100,8 +100,7 @@ pub const Context = struct {
                 const lhs = try self.check(t.lhs.*);
                 const rhs = try self.check(t.rhs.*);
                 if (!(lhs.isNumeric() or rhs.isNumeric())) panic("BinOp on non-number", .{});
-                if (!rhs.coercible(lhs)) panic("Incompatible BinOp type", .{});
-                return lhs;
+                return lhs.min(rhs);
             },
             .Return => |v| {
                 const ty = try self.check(v.*);
