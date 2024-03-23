@@ -1,275 +1,239 @@
 const std = @import("std");
 const lib = @import("lib.zig");
 const stdout = std.io.getStdOut().writer();
+const panic = std.debug.panic;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
-const StringHashMap = std.StringHashMap;
+const StringArrayHashMap = std.StringArrayHashMap;
 const Type = lib.Type;
+const File = lib.File;
 const Ast = lib.Ast;
 const Context = lib.Context;
-const push = lib.tools.push;
 const box = lib.tools.box;
 
-const Storage = union(enum) {
-    temp: usize,
-    local: []const u8,
-    global: []const u8,
+pub const Storage = union(enum) {
+    literal: usize,
+    temp: struct { usize, Type }, // local
+    named: []const u8,
 
-    fn fmt(self: Storage, allocator: Allocator) std.fmt.AllocPrintError![]const u8 {
+    fn ty(self: Storage, ctx: *const Context) Type {
         return switch (self) {
-            .temp => |tmp| try std.fmt.allocPrint(allocator, "%t{d}", .{tmp}),
-            .local => |name| try std.fmt.allocPrint(allocator, "%{s}", .{name}),
-            .global => |name| try std.fmt.allocPrint(allocator, "${s}", .{name}),
+            .literal => .U64,
+            .temp => |t| t[1],
+            .named => |v| ctx.symbols.get(v).?.ty,
+        };
+    }
+
+    fn fmt(self: Storage, ctx: *const Context) std.fmt.AllocPrintError![]const u8 {
+        return switch (self) {
+            .literal => |v| try std.fmt.allocPrint(ctx.allocator, "{d}", .{v}),
+            .temp => |t| try std.fmt.allocPrint(ctx.allocator, "%t{d}", .{t[0]}),
+            .named => |v| try std.fmt.allocPrint(ctx.allocator, "{c}{s}", .{ ctx.symbols.get(v).?.scope.fmt(), v }),
         };
     }
 };
 
-pub const State = struct {
-    const Symbol = enum {
-        Local,
-        Global,
-    };
-
-    allocator: Allocator,
-    symbols: StringHashMap(Symbol),
-    allocated: usize = 0,
-    ret: ?Type = null,
-
-    pub fn init(allocator: Allocator) State {
-        return .{
-            .allocator = allocator,
-            .symbols = StringHashMap(Symbol).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *State) void {
-        self.symbols.deinit();
-    }
-
-    fn clone(self: *State) Allocator.Error!State {
-        return .{
-            .allocator = self.allocator,
-            .symbols = try self.symbols.clone(),
-            .allocated = self.allocated,
-            .ret = self.ret,
-        };
-    }
-
-    fn alloc(self: *State) Storage {
-        self.allocated += 1;
-        return .{ .temp = self.allocated - 1 };
-    }
-};
-
-const Node = union(enum) {
-    const Function_t = struct {
-        name: []const u8,
-        params: []const []const u8,
-        blocks: []const []const Ir,
+pub const IrFile = struct {
+    const Function = struct {
+        params: [][]const u8,
         attr: Ast.Attr,
+        block: []const Ir,
+        ty: Type,
     };
 
+    ctx: Context,
+    functions: StringArrayHashMap(Function),
+
+    pub fn from(allocator: Allocator, file: File) Allocator.Error!IrFile {
+        var ctx = Context.init(allocator);
+        var symbols = file.symbols.iterator();
+        var functions = file.functions.iterator();
+        var list = StringArrayHashMap(IrFile.Function).init(ctx.allocator);
+
+        while (symbols.next()) |entry|
+            try ctx.symbols.put(entry.key_ptr.*, .{ .scope = .global, .ty = entry.value_ptr.* });
+
+        while (functions.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const func = entry.value_ptr.*;
+            const f = func.ty.Function;
+            try ctx.symbols.put(name, .{
+                .scope = .global,
+                .ty = func.ty,
+            });
+
+            var context = try ctx.clone();
+            context.ret = f.ret.*;
+            for (func.params, 0..) |param, i|
+                try context.symbols.put(param, .{
+                    .scope = .local,
+                    .ty = f.params[i],
+                });
+
+            const block = switch (func.expr) {
+                .Block => try Ir.from(&context, func.expr),
+                else => try Ir.from(&context, .{ .Return = try box(allocator, func.expr) }),
+            };
+
+            try list.put(name, .{
+                .params = func.params,
+                .attr = func.attr,
+                .block = block,
+                .ty = func.ty,
+            });
+        }
+
+        return .{
+            .ctx = ctx,
+            .functions = list,
+        };
+    }
+    pub fn compile(self: IrFile) !void {
+        var functions = self.functions.iterator();
+        while (functions.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const func = entry.value_ptr.*;
+            const f = func.ty.Function;
+
+            var context = try self.ctx.clone();
+            context.ret = f.ret.*;
+            for (func.params, f.params) |param, ty|
+                try context.symbols.put(param, .{
+                    .scope = .local,
+                    .ty = ty,
+                });
+
+            if (func.attr._export)
+                try stdout.writeAll("export ");
+            try stdout.print("function {s} ${s}(", .{ f.ret.abiFmt(), name });
+            for (func.params, f.params) |param, ty|
+                try stdout.print("{s} %{s},", .{ ty.abiFmt(), param });
+            try stdout.writeAll(") {\n@L0\n");
+            var label: usize = 0;
+            for (func.block, 0..) |ir, i| {
+                try ir.compile(&context);
+                if (ir == .Return and i != func.block.len - 1) {
+                    label += 1;
+                    try stdout.print("@L{d}\n", .{label});
+                }
+            }
+            try stdout.writeAll("}\n");
+        }
+    }
+};
+
+pub const Ir = union(enum) {
     const Call_t = struct {
-        f: *const Ir,
-        exprs: []const Ir,
+        f: Storage,
+        dst: Storage,
+        src: []const Storage,
     };
 
     const BinOp_t = struct {
         kind: Ast.BinOpKind,
-        lhs: *const Ir,
-        rhs: *const Ir,
+        dst: Storage,
+        lhs: Storage,
+        rhs: Storage,
     };
 
-    Integer: usize,
-    Identifier: []const u8,
+    Nop: Storage,
     Call: Call_t,
-    Function: Function_t,
     BinOp: BinOp_t,
-    Return: *const Ir,
-};
+    Return: Storage,
 
-pub const Ir = struct {
-    node: Node,
-    ty: Type,
-
-    pub fn from(allocator: Allocator, input: []const Ast) Allocator.Error![]Ir {
-        var context = Context.init(allocator);
-        defer context.deinit();
-
-        return try fromAsts(&context, input, null);
-    }
-
-    fn fromAsts(ctx: *Context, input: []const Ast, expected: ?[]const Type) Allocator.Error![]Ir {
-        var output = try ctx.allocator.alloc(Ir, input.len);
-        for (input, 0..) |ast, i|
-            output[i] = try Ir.fromAst(ctx, ast, if (expected) |e| e[i] else null);
-        return output;
-    }
-
-    fn fromAst(ctx: *Context, input: Ast, expected: ?Type) Allocator.Error!Ir {
-        return switch (input) {
-            .Integer => |value| .{
-                .node = .{ .Integer = value },
-                .ty = expected.?,
+    fn from(ctx: *Context, input: Ast) Allocator.Error![]Ir {
+        var list = ArrayList(Ir).init(ctx.allocator);
+        switch (input) {
+            .Integer => |v| try list.append(.{ .Nop = .{ .literal = v } }),
+            .Identifier => |v| try list.append(.{ .Nop = .{ .named = v } }),
+            .Block => |v| {
+                for (v) |item| {
+                    const slice = try from(ctx, item);
+                    try list.appendSlice(slice);
+                }
             },
-            .Identifier => |value| .{
-                .node = .{ .Identifier = value },
-                .ty = ctx.symbols.get(value).?,
-            },
-            .Call => |tuple| {
-                const f = try fromAst(ctx, tuple.f.*, null);
-                const ty = f.ty.Function;
-                return .{
-                    .node = .{ .Call = .{
-                        .f = try box(ctx.allocator, f),
-                        .exprs = try fromAsts(ctx, tuple.exprs, ty.params),
-                    } },
-                    .ty = ty.ret.*,
-                };
-            },
-            .Function => |tuple| {
-                var names = try ctx.allocator.alloc([]const u8, tuple.params.len);
-                var types = try ctx.allocator.alloc(Type, tuple.params.len);
-                for (tuple.params, 0..) |param, i| {
-                    names[i] = param.name;
-                    types[i] = param.ty;
+            .Call => |t| {
+                const f = try from(ctx, t.f.*);
+                const ret = f[f.len - 1].dest().ty(ctx).Function.ret.*;
+
+                var src = ArrayList(Storage).init(ctx.allocator);
+                for (t.exprs) |expr| {
+                    const e = try from(ctx, expr);
+                    try src.append(e[e.len - 1].dest());
+                    try list.appendSlice(e);
                 }
 
-                const ty = .{ .Function = .{
-                    .params = types,
-                    .ret = try box(ctx.allocator, tuple.ret),
-                } };
-
-                try ctx.symbols.put(tuple.name, ty);
-                var context = try ctx.clone();
-                defer context.deinit();
-                for (tuple.params) |param|
-                    try context.symbols.put(param.name, param.ty);
-                context.ret = tuple.ret;
-
-                const exprs = try Ir.fromAsts(&context, tuple.exprs, null);
-
-                return .{
-                    .node = .{ .Function = .{
-                        .name = tuple.name,
-                        .params = names,
-                        .blocks = try blockify(ctx.allocator, exprs),
-                        .attr = tuple.attr,
-                    } },
-                    .ty = ty,
-                };
+                try list.append(.{ .Call = .{
+                    .f = f[f.len - 1].dest(),
+                    .dst = nextStorage(list.items, ret),
+                    .src = try src.toOwnedSlice(),
+                } });
             },
-            .BinOp => |tuple| {
-                const lhs = try Ir.fromAst(ctx, tuple.lhs.*, expected.?);
-                const rhs = try Ir.fromAst(ctx, tuple.rhs.*, expected.?);
+            .BinOp => |t| {
+                const lhs = try from(ctx, t.lhs.*);
+                const rhs = try from(ctx, t.rhs.*);
+                const ty = lhs[lhs.len - 1].dest().ty(ctx); // TODO: Improve Type inference
+                try list.appendSlice(lhs);
+                try list.appendSlice(rhs);
+                try list.append(.{ .BinOp = .{
+                    .kind = t.kind,
+                    .dst = nextStorage(list.items, ty),
+                    .lhs = lhs[lhs.len - 1].dest(),
+                    .rhs = rhs[rhs.len - 1].dest(),
+                } });
+            },
+            .Return => |v| {
+                const ret = try from(ctx, v.*);
+                try list.appendSlice(ret);
+                try list.append(.{ .Return = ret[ret.len - 1].dest() });
+            },
+        }
+        return list.toOwnedSlice();
+    }
 
-                return .{
-                    .node = .{ .BinOp = .{
-                        .kind = tuple.kind,
-                        .lhs = try box(ctx.allocator, lhs),
-                        .rhs = try box(ctx.allocator, rhs),
-                    } },
-                    .ty = lhs.ty,
-                };
+    fn compile(self: Ir, ctx: *const Context) !void {
+        switch (self) {
+            .Nop => {},
+            .Call => |t| {
+                try stdout.print("\t{s} ={s} call {s}(", .{
+                    try t.dst.fmt(ctx),
+                    t.dst.ty(ctx).abiFmt(),
+                    try t.f.fmt(ctx),
+                });
+                for (t.src) |ir|
+                    try stdout.print("{s} {s},", .{ ir.ty(ctx).abiFmt(), try ir.fmt(ctx) });
+                try stdout.writeAll(")\n");
             },
-            .Return => |value| .{
-                .node = .{ .Return = try box(ctx.allocator, try Ir.fromAst(ctx, value.*, ctx.ret.?)) },
-                .ty = .NoReturn,
+            .BinOp => |t| {
+                try stdout.print("\t{s} ={s} {s} {s}, {s}\n", .{
+                    try t.dst.fmt(ctx),
+                    t.dst.ty(ctx).abiFmt(),
+                    t.kind.fmt(),
+                    try t.lhs.fmt(ctx),
+                    try t.rhs.fmt(ctx),
+                });
             },
+            .Return => |v| {
+                try stdout.print("\tret {s}\n", .{try v.fmt(ctx)});
+            },
+        }
+    }
+
+    fn dest(self: Ir) Storage {
+        return switch (self) {
+            .Nop => |v| v,
+            .BinOp => |t| t.dst,
+            .Call => |t| t.dst,
+            .Return => unreachable, // TODO: Handle
         };
     }
 
-    fn blockify(allocator: Allocator, input: []const Ir) Allocator.Error![]const []const Ir {
-        var blocks = try allocator.alloc([]const Ir, 0);
-        var i: usize = 0;
-
-        while (i < input.len) : (i += 1) {
-            const start = i;
-            while (i < input.len and input[i].node != .Return) : (i += 1) {}
-            blocks = try push([]const Ir, allocator, blocks, input[start..i+1]);
+    fn nextStorage(self: []const Ir, ty: Type) Storage {
+        var temp: usize = 0;
+        for (self) |item| {
+            // This assumes the ir allocates in order
+            if (item.dest() == .temp and item.dest().temp[0] == temp) temp += 1;
         }
-
-        return blocks;
-    }
-
-    pub fn compile(allocator: Allocator, self: []const Ir) !void {
-        var state = State.init(allocator);
-        for (self) |ir|
-            _ = try ir.print(&state);
-    }
-
-    fn print(self: Ir, state: *State) !Storage {
-        switch (self.node) {
-            .Integer => |value| {
-                const dst = state.alloc();
-                try stdout.print("\t{s} ={s} copy {d}\n", .{ try dst.fmt(state.allocator), self.ty.baseFmt(), value });
-                return dst;
-            },
-            .Identifier => |value| return switch (state.symbols.get(value).?) {
-                .Local => .{ .local = value },
-                .Global => .{ .global = value },
-            },
-            .Call => |tuple| {
-                const params = tuple.f.ty.Function.params;
-                var args = try state.allocator.alloc(Storage, tuple.exprs.len);
-                for (tuple.exprs, 0..) |expr, i|
-                    args[i] = try expr.print(state);
-
-                const dst = state.alloc();
-                const src = try tuple.f.print(state);
-                try stdout.print("\t{s} ={s} call {s} (", .{
-                    try dst.fmt(state.allocator),
-                    self.ty.abiFmt(),
-                    try src.fmt(state.allocator),
-                });
-                for (params, 0..) |param, i|
-                    try stdout.print("{s} {s},", .{param.abiFmt(), try args[i].fmt(state.allocator)});
-                try stdout.print(")\n", .{});
-                return dst;
-            },
-            .Function => |tuple| {
-                try state.symbols.put(tuple.name, .Global);
-
-                const ty = self.ty.Function;
-                var s = try state.clone();
-                defer s.deinit();
-                s.ret = ty.ret.*;
-
-                for (tuple.params) |param|
-                    try s.symbols.put(param, .Local);
-
-                if (tuple.attr._export) try stdout.print("export ", .{});
-                try stdout.print("function {s} ${s}(", .{ty.ret.abiFmt(), tuple.name});
-                for (tuple.params, 0..) |param, i|
-                    try stdout.print("{s} %{s},", .{ty.params[i].abiFmt(), param});
-                try stdout.print(") {{\n", .{});
-                for (tuple.blocks, 0..) |block, i| {
-                    try stdout.print("@L{d}\n", .{i});
-                    for (block) |expr|
-                        _ = try expr.print(&s);
-                }
-                try stdout.print("}}\n", .{});
-
-                return undefined;
-            },
-            .BinOp => |tuple| {
-                const dst = state.alloc();
-                const lhs = try tuple.lhs.print(state);
-                const rhs = try tuple.rhs.print(state);
-                try stdout.print("\t{s} ={s} {s} {s}, {s}\n", .{
-                    try dst.fmt(state.allocator),
-                    self.ty.baseFmt(),
-                    tuple.kind.fmt(),
-                    try lhs.fmt(state.allocator),
-                    try rhs.fmt(state.allocator),
-                });
-                return dst;
-            },
-            .Return => |value| {
-                const src = try value.print(state);
-                try stdout.print("\tret {s}\n", .{try src.fmt(state.allocator)});
-
-                return undefined;
-            },
-        }
+        return .{ .temp = .{ temp, ty } };
     }
 };

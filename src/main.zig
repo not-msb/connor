@@ -1,27 +1,32 @@
 const std = @import("std");
 const lib = @import("lib.zig");
 const cwd = std.fs.cwd;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Token = lib.Token;
+const Lexer = lib.Lexer;
+const File = lib.File;
 const Ast = lib.Ast;
+const Type = lib.Type;
+const Storage = lib.Storage;
+const IrFile = lib.IrFile;
 const Ir = lib.Ir;
 const Context = lib.Context;
-const append = lib.tools.append;
 
 fn preprocess(allocator: Allocator, input: []const u8) Allocator.Error![]const u8 {
-    var output = try allocator.alloc(u8, 0);
+    var output = ArrayList(u8).init(allocator);
     var i: usize = 0;
 
     while (i < input.len) {
         const start = i;
         while (i < input.len and !std.mem.startsWith(u8, input[i..], "//")) : (i += 1) {}
-        const len = i - start;
+        const end = i;
 
         while (i < input.len and input[i] != '\n') : (i += 1) {}
-        output = try append(u8, allocator, output, input[start..start+len]);
+        try output.appendSlice(input[start..end]);
     }
 
-    return output;
+    return output.toOwnedSlice();
 }
 
 pub fn main() !void {
@@ -35,13 +40,16 @@ pub fn main() !void {
     const input = try cwd().readFileAlloc(allocator, "main.con", std.math.maxInt(usize));
     const processed = try preprocess(allocator, input);
 
-    const tokens = try Token.parse(allocator, processed);
-    const asts = try Ast.parse(allocator, tokens);
+    const file = try File.parse(allocator, processed);
+    try Context.scan(allocator, file); // This prints the ast
 
-    var context = Context.init(allocator);
-    for (asts) |ast|
-        try context.check(ast, null);
+    const ir_file = try IrFile.from(allocator, file);
+    try ir_file.compile();
 
-    const irs = try Ir.from(allocator, asts);
-    try Ir.compile(allocator, irs);
+    std.debug.print("Arena:     {d}\n", .{arena.queryCapacity()});
+    std.debug.print("Type:      {d}\n", .{@sizeOf(Type)});
+    std.debug.print("Storage:   {d}\n", .{@sizeOf(Storage)});
+    std.debug.print("Token:     {d}\n", .{@sizeOf(Token)});
+    std.debug.print("Ast:       {d}\n", .{@sizeOf(Ast)});
+    std.debug.print("Ir:        {d}\n", .{@sizeOf(Ir)});
 }

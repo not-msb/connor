@@ -1,22 +1,47 @@
 const std = @import("std");
 const lib = @import("lib.zig");
+const panic = std.debug.panic;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
+const StringArrayHashMap = std.StringArrayHashMap;
 const Context = lib.Context;
+const Lexer = lib.Lexer;
 const Token = lib.Token;
 const Type = lib.Type;
-const tools = lib.tools;
+const box = lib.tools.box;
 
-const parser = lib.parser;
-const Parser = parser.Parser;
-const alt = parser.alt;
-const tag = parser.tag;
-const map = parser.map;
-const mapWith = parser.mapWith;
-const many0 = parser.many0;
-const delimited0 = parser.delimited0;
-const sequence = parser.sequence;
-const drain = parser.drain;
-const opt = parser.opt;
+pub const File = struct {
+    const Function = struct {
+        params: [][]const u8,
+        attr: Ast.Attr,
+        expr: Ast,
+        ty: Type,
+    };
+
+    symbols: StringArrayHashMap(Type),
+    functions: StringArrayHashMap(Function),
+
+    // TODO: Move preprocessor here
+    pub fn parse(allocator: Allocator, input: []const u8) Allocator.Error!File {
+        var lexer = try Lexer.parse(allocator, input);
+        defer lexer.deinit();
+        var symbols = StringArrayHashMap(Type).init(allocator);
+        var functions = StringArrayHashMap(Function).init(allocator);
+
+        while (lexer.tokens.items.len != 0) {
+            if (try Ast._extern(&lexer)) |t| {
+                try symbols.put(t.name, t.ty);
+            } else if (try Ast._function(&lexer)) |t| {
+                try functions.put(t.name, t.func);
+            } else @panic("Couldn't parse");
+        }
+
+        return .{
+            .symbols = symbols,
+            .functions = functions,
+        };
+    }
+};
 
 pub const Ast = union(enum) {
     pub const Param = struct {
@@ -25,15 +50,7 @@ pub const Ast = union(enum) {
     };
 
     pub const Attr = struct {
-        _export: bool,
-    };
-
-    const Function_t = struct {
-        name: []const u8,
-        params: []const Param,
-        exprs: []const Ast,
-        attr: Attr,
-        ret: Type,
+        _export: bool = false,
     };
 
     const Call_t = struct {
@@ -59,202 +76,227 @@ pub const Ast = union(enum) {
 
     Integer: usize,
     Identifier: []const u8,
+    Block: []const Ast,
     Call: Call_t,
-    Function: Function_t,
     BinOp: BinOp_t,
     Return: *const Ast,
 
-    pub fn parse(allocator: Allocator, input: []const Token) Allocator.Error![]Ast {
-        const result = try many0(
-            Ast.p_function(),
-            null,
-        ).parse(allocator, input) orelse @panic("Couldn't parse");
-        return result.output;
+    fn _extern_params(_lexer: *Lexer) Allocator.Error!?[]Type {
+        var lexer = try _lexer.clone();
+        var params = ArrayList(Type).init(_lexer.allocator);
+
+        b: {
+            _ = if (lexer.peek() == .LParen) lexer.next() else break :b;
+            while (true) {
+                if (lexer.peek() == .RParen) break;
+                const param = if (lexer.peek() == .Type) lexer.next().Type else break :b;
+                try params.append(param);
+                if (lexer.peek() == .Comma) _ = lexer.next() else break;
+            }
+            _ = if (lexer.peek() == .RParen) lexer.next() else break :b;
+
+            _lexer.deinit();
+            _lexer.* = lexer;
+            return try params.toOwnedSlice();
+        }
+
+        lexer.deinit();
+        return null;
     }
 
-    fn p_expr() Parser(Token, Ast) {
-        const gen = struct {
-            fn f(allocator: Allocator, input: []const Token) Parser(Token, Ast).Result {
-                if (try Ast.p_binOp().parse(allocator, input)) |result|
-                    return result;
-                if (try Ast.p_return().parse(allocator, input)) |result|
-                    return result;
-                if (try Ast.p_call().parse(allocator, input)) |result|
-                    return result;
-                if (try Ast.p_int().parse(allocator, input)) |result|
-                    return result;
-                return null;
+    fn _params(_lexer: *Lexer) Allocator.Error!?struct { names: [][]const u8, types: []Type } {
+        var lexer = try _lexer.clone();
+        var names = ArrayList([]const u8).init(_lexer.allocator);
+        var types = ArrayList(Type).init(_lexer.allocator);
+
+        b: {
+            _ = if (lexer.peek() == .LParen) lexer.next() else break :b;
+            while (true) {
+                if (lexer.peek() == .RParen) break;
+                const ty = if (lexer.peek() == .Type) lexer.next().Type else break :b;
+                const name = if (lexer.peek() == .Word) lexer.next().Word else break :b;
+                try names.append(name);
+                try types.append(ty);
+                if (lexer.peek() == .Comma) _ = lexer.next() else break;
             }
+            _ = if (lexer.peek() == .RParen) lexer.next() else break :b;
+
+            _lexer.deinit();
+            _lexer.* = lexer;
+            return .{
+                .names = try names.toOwnedSlice(),
+                .types = try types.toOwnedSlice(),
+            };
+        }
+
+        lexer.deinit();
+        return null;
+    }
+
+    fn _extern(_lexer: *Lexer) Allocator.Error!?struct { name: []const u8, ty: Type } {
+        var lexer = try _lexer.clone();
+
+        b: {
+            _ = if (lexer.peek() == .Extern) lexer.next() else break :b;
+            const ext = .{
+                .ret = if (lexer.peek() == .Type) lexer.next().Type else break :b,
+                .name = if (lexer.peek() == .Word) lexer.next().Word else break :b,
+                .params = try _extern_params(&lexer) orelse break :b,
+            };
+            _ = if (lexer.peek() == .SemiColon) lexer.next() else break :b;
+
+            _lexer.deinit();
+            _lexer.* = lexer;
+            return .{
+                .name = ext.name,
+                .ty = .{ .Function = .{
+                    .params = ext.params,
+                    .ret = try box(lexer.allocator, ext.ret),
+                } },
+            };
+        }
+
+        lexer.deinit();
+        return null;
+    }
+
+    fn _function(_lexer: *Lexer) Allocator.Error!?struct { name: []const u8, func: File.Function } {
+        var lexer = try _lexer.clone();
+
+        b: {
+            const _export: ?void = if (lexer.peek() == .Export) lexer.next().Export else null;
+            const func = .{
+                .ret = if (lexer.peek() == .Type) lexer.next().Type else break :b,
+                .name = if (lexer.peek() == .Word) lexer.next().Word else break :b,
+                .params = try _params(&lexer) orelse break :b,
+                .expr = try expr(&lexer, 0),
+                .attr = .{
+                    ._export = _export != null,
+                },
+            };
+            _ = if (lexer.peek() == .SemiColon) lexer.next() else break :b;
+
+            _lexer.deinit();
+            _lexer.* = lexer;
+            return .{
+                .name = func.name,
+                .func = .{
+                    .params = func.params.names,
+                    .attr = func.attr,
+                    .expr = func.expr,
+                    .ty = .{ .Function = .{
+                        .params = func.params.types,
+                        .ret = try box(lexer.allocator, func.ret),
+                    } },
+                },
+            };
+        }
+
+        lexer.deinit();
+        return null;
+    }
+
+    // Pratt Parser
+    pub fn expr(lexer: *Lexer, min_power: u8) Allocator.Error!Ast {
+        var lhs: Ast = switch (lexer.next()) {
+            .Eof => panic("Reached Eof", .{}),
+            .LBracket => b: {
+                var exprs = ArrayList(Ast).init(lexer.allocator);
+                while (true) {
+                    if (lexer.peek() == .RBracket) break;
+                    const e = try expr(lexer, 0);
+                    try exprs.append(e);
+                    std.debug.assert(lexer.next() == .SemiColon);
+                }
+                std.debug.assert(lexer.next() == .RBracket);
+                break :b .{ .Block = try exprs.toOwnedSlice() };
+            },
+            .Return => b: {
+                const lhs = try expr(lexer, prefixPower(.Return));
+                break :b .{ .Return = try box(lexer.allocator, lhs) };
+            },
+            .Integer => |v| .{ .Integer = v },
+            .Word => |v| .{ .Identifier = v },
+            else => |token| panic("Unexpected Token: {}", .{token}),
         };
 
-        return .{ ._parse = gen.f };
-    }
+        while (true) {
+            const token = lexer.peek();
+            const op = switch (token) {
+                .Eof, .SemiColon, .Comma, .RParen => break,
+                .Add, .LParen => token,
+                else => panic("Unexpected Token: {}", .{token}),
+            };
 
-    fn p_stmt() Parser(Token, Ast) {
-        return map(
-            sequence(.{
-                Ast.p_expr(),
-                drain(tag(Token, .SemiColon)),
-            }),
-            tools.index(Ast, 0),
-        );
-    }
+            if (postfixPower(op)) |power| {
+                if (power < min_power) break;
+                _ = lexer.next();
 
-    fn p_int() Parser(Token, Ast) {
-        return map(
-            map(tag(Token, .Integer), tools.unTag(Token, usize, .Integer)),
-            Ast.fromInt,
-        );
-    }
+                switch (op) {
+                    .LParen => {
+                        var exprs = ArrayList(Ast).init(lexer.allocator);
 
-    fn p_word() Parser(Token, Ast) {
-        return map(
-            map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
-            Ast.fromWord,
-        );
-    }
+                        while (true) {
+                            if (lexer.peek() == .RParen) break;
+                            const e = try expr(lexer, 0);
+                            try exprs.append(e);
+                            if (lexer.peek() == .Comma) _ = lexer.next() else break;
+                        }
 
-    fn p_return() Parser(Token, Ast) {
-        return mapWith(
-            sequence(.{
-                drain(tag(Token, .Return)),
-                p_expr(),
-            }),
-            fromReturn,
-        );
-    }
-
-    fn p_binOp() Parser(Token, Ast) {
-        return mapWith(
-            sequence(.{
-                alt(.{
-                    tag(Token, .Add),
-                }),
-                p_expr(),
-                p_expr(),
-            }),
-            fromBinOp,
-        );
-    }
-
-    fn p_call() Parser(Token, Ast) {
-        const gen = struct {
-            fn f(allocator: Allocator, _input: []const Token) Parser(Token, Ast).Result {
-                const word = try p_word().parse(allocator, _input) orelse return null;
-                var input = word.input;
-                var output = word.output;
-
-                while (try p_tuple().parse(allocator, input)) |result| {
-                    input = result.input;
-
-                    output = .{ .Call = .{
-                        .f = try tools.box(allocator, output),
-                        .exprs = result.output,
-                    } };
+                        std.debug.assert(lexer.next() == .RParen);
+                        lhs = .{ .Call = .{
+                            .f = try box(lexer.allocator, lhs),
+                            .exprs = try exprs.toOwnedSlice(),
+                        } };
+                    },
+                    else => unreachable,
                 }
 
-                return .{ .input = input, .output = output };
+                continue;
             }
+
+            if (infixPower(op)) |power| {
+                if (power.l < min_power) break;
+                _ = lexer.next();
+
+                const rhs = try expr(lexer, power.r);
+                const kind: Ast.BinOpKind = switch (op) {
+                    .Add => .Add,
+                    else => unreachable,
+                };
+
+                lhs = .{ .BinOp = .{
+                    .kind = kind,
+                    .lhs = try box(lexer.allocator, lhs),
+                    .rhs = try box(lexer.allocator, rhs),
+                } };
+                continue;
+            }
+
+            break;
+        }
+
+        return lhs;
+    }
+
+    fn prefixPower(op: Token) u8 {
+        return switch (op) {
+            .Return => 2,
+            else => panic("Unexpected Token: {}", .{op}),
         };
-
-        return .{ ._parse = gen.f };
     }
 
-    fn p_tuple() Parser(Token, []Ast) {
-        return map(
-            sequence(.{
-                drain(tag(Token, .LParen)),
-                delimited0(Ast.p_expr(), tag(Token, .Comma)),
-                drain(tag(Token, .RParen)),
-            }),
-            tools.index([]Ast, 1),
-        );
+    fn postfixPower(op: Token) ?u8 {
+        return switch (op) {
+            .LParen => 10,
+            else => null,
+        };
     }
 
-    fn p_param() Parser(Token, Param) {
-        return map(
-            sequence(.{
-                map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
-                map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
-            }),
-            fromParam,
-        );
-    }
-
-    fn p_params() Parser(Token, []Param) {
-        return map(
-            sequence(.{
-                drain(tag(Token, .LParen)),
-                delimited0(
-                    Ast.p_param(),
-                    tag(Token, .Comma)
-                ),
-                drain(tag(Token, .RParen)),
-            }),
-            tools.index([]Param, 1),
-        );
-    }
-
-    fn p_block() Parser(Token, []Ast) {
-        return map(
-            sequence(.{
-                drain(tag(Token, .LBracket)),
-                many0(Ast.p_stmt(), null),
-                drain(tag(Token, .RBracket)),
-            }),
-            tools.index([]Ast, 1),
-        );
-    }
-
-    fn p_function() Parser(Token, Ast) {
-        return map(
-            sequence(.{
-                opt(drain(tag(Token, .Export))),
-                map(tag(Token, .Type), tools.unTag(Token, Type, .Type)),
-                map(tag(Token, .Word), tools.unTag(Token, []const u8, .Word)),
-                Ast.p_params(),
-                Ast.p_block(),
-            }),
-            fromFunction,
-        );
-    }
-
-    fn fromInt(source: usize) Ast {
-        return .{ .Integer = source };
-    }
-
-    fn fromWord(source: []const u8) Ast {
-        return .{ .Identifier = source };
-    }
-
-    fn fromParam(source: struct { Type, []const u8 }) Param {
-        return .{ .name = source[1], .ty = source[0] };
-    }
-
-    fn fromReturn(allocator: Allocator, source: struct { void, Ast }) Allocator.Error!Ast {
-        return .{ .Return = try tools.box(allocator, source[1]) };
-    }
-
-    fn fromBinOp(allocator: Allocator, source: struct { Token, Ast, Ast }) Allocator.Error!Ast {
-        return .{ .BinOp = .{
-            .kind = switch (source[0]) {
-                .Add => .Add,
-                else => unreachable,
-            },
-            .lhs = try tools.box(allocator, source[1]),
-            .rhs = try tools.box(allocator, source[2]),
-        } };
-    }
-
-    fn fromFunction(source: struct { ?void, Type, []const u8, []Param, []Ast }) Ast {
-        return .{ .Function = .{
-            .name = source[2],
-            .params = source[3],
-            .exprs = source[4],
-            .attr = .{
-                ._export = source[0] != null,
-            },
-            .ret = source[1],
-        } };
+    fn infixPower(op: Token) ?struct { l: u8, r: u8 } {
+        return switch (op) {
+            .Add => .{ .l = 4, .r = 5 },
+            else => null,
+        };
     }
 };

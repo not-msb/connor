@@ -1,13 +1,10 @@
-u32 maxU32() {
-    return 4294967295;
-}
+extern u64 syscall1(u64, u64);
+extern noreturn exit(u32);
 
-u8 add(u8 a, u8 b) {
-    return + a b;
-}
+u32 maxU32() 4294967295;
+u32 add(u32 a, u32 b) a + b;
 
 // Entry function
-export u8 main() {
-    return 100;
-    return add(1, 2);
-}
+export noreturn _start() {
+    return exit(add(maxU32(), 1));
+};

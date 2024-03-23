@@ -1,20 +1,40 @@
 const std = @import("std");
 const lib = @import("lib.zig");
+const panic = std.debug.panic;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 const Type = lib.Type;
+const File = lib.File;
 const Ast = lib.Ast;
 const box = lib.tools.box;
 
+pub const Symbol = struct {
+    const Scope = enum {
+        local,
+        global,
+
+        pub fn fmt(self: Scope) u8 {
+            return switch (self) {
+                .local => '%',
+                .global => '$',
+            };
+        }
+    };
+
+    scope: Scope,
+    ty: Type,
+};
+
 pub const Context = struct {
     allocator: Allocator,
-    symbols: StringHashMap(Type),
+    symbols: StringHashMap(Symbol),
     ret: ?Type = null,
 
     pub fn init(allocator: Allocator) Context {
         return .{
             .allocator = allocator,
-            .symbols = StringHashMap(Type).init(allocator),
+            .symbols = StringHashMap(Symbol).init(allocator),
         };
     }
 
@@ -29,56 +49,64 @@ pub const Context = struct {
         };
     }
 
-    pub fn check(self: *Context, ast: Ast, expected: ?Type) Allocator.Error!void {
+    pub fn scan(allocator: Allocator, file: File) Allocator.Error!void {
+        var ctx = Context.init(allocator);
+        var symbols = file.symbols.iterator();
+        var functions = file.functions.iterator();
+
+        while (symbols.next()) |entry|
+            try ctx.symbols.put(entry.key_ptr.*, .{
+                .scope = .global,
+                .ty = entry.value_ptr.*,
+            });
+
+        while (functions.next()) |entry| {
+            const func = entry.value_ptr.*;
+            const f = func.ty.Function;
+            try ctx.symbols.put(entry.key_ptr.*, .{ .scope = .global, .ty = func.ty });
+
+            var context = try ctx.clone();
+            context.ret = f.ret.*;
+            for (func.params, 0..) |name, i|
+                try context.symbols.put(name, .{ .scope = .local, .ty = f.params[i] });
+
+            const ret = try context.check(func.expr);
+            if (!ret.coercible(f.ret.*)) panic("Incompatible return type", .{});
+        }
+    }
+
+    fn check(self: *Context, ast: Ast) Allocator.Error!Type {
         switch (ast) {
-            .Integer => {
-                if (expected == null or !expected.?.isNumeric()) @panic("Can't infer type for Integer");
-            },
-            .Identifier => |value| {
-                if (expected == null) return;
-                const ty = self.symbols.get(value).?;
-                if (!ty.coercible(expected.?)) @panic("Incompatible type for Identifier");
-            },
-            .Call => |tuple| {
-                const ty = switch (tuple.f.*) {
-                    .Identifier => |value| self.symbols.get(value).?,
-                    else => unreachable,
-                };
-                if (ty != .Function) @panic("Function call on Non-Function");
-
-                for (tuple.exprs, 0..) |expr, i|
-                    try self.check(expr, ty.Function.params[i]);
-            },
-            .Function => |tuple| {
-                var context = try self.clone();
-                defer context.deinit();
-                context.ret = tuple.ret;
-
-                var params = try self.allocator.alloc(Type, tuple.params.len);
-                for (tuple.params, 0..) |param, i| {
-                    try context.symbols.put(param.name, param.ty);
-                    params[i] = param.ty;
+            .Integer => return .CompInt,
+            .Identifier => |v| return self.symbols.get(v).?.ty,
+            .Block => |v| {
+                var ret: ?Type = null;
+                for (v) |expr| {
+                    const ty = try self.check(expr);
+                    if (ty == .NoReturn) ret = .NoReturn;
                 }
-
-                const ty = .{ .Function = .{
-                    .params = params,
-                    .ret = try box(self.allocator, tuple.ret),
-                }};
-
-                try context.symbols.put(tuple.name, ty);
-                try self.symbols.put(tuple.name, ty);
-
-                for (tuple.exprs) |expr|
-                    try context.check(expr, null);
+                return ret orelse .Void;
             },
-            .BinOp => |tuple| {
-                if (expected == null or !expected.?.isNumeric()) @panic("Can't infer type for BinOp");
-                try self.check(tuple.lhs.*, expected);
-                try self.check(tuple.rhs.*, expected);
+            .Call => |t| {
+                const f = try self.check(t.f.*);
+                if (f != .Function) panic("Function call on Non-Function", .{});
+                for (t.exprs, 0..) |expr, i| {
+                    const e = try self.check(expr);
+                    if (!e.coercible(f.Function.params[i])) panic("Incompatible parameter type", .{});
+                }
+                return f.Function.ret.*;
             },
-            .Return => |value| {
-                if (self.ret == null) @panic("No return type availible");
-                try self.check(value.*, self.ret.?);
+            .BinOp => |t| {
+                const lhs = try self.check(t.lhs.*);
+                const rhs = try self.check(t.rhs.*);
+                if (!(lhs.isNumeric() or rhs.isNumeric())) panic("BinOp on non-number", .{});
+                if (!rhs.coercible(lhs)) panic("Incompatible BinOp type", .{});
+                return lhs;
+            },
+            .Return => |v| {
+                const ty = try self.check(v.*);
+                if (!ty.coercible(self.ret.?)) panic("Incompatible return type", .{});
+                return .NoReturn;
             },
         }
     }
